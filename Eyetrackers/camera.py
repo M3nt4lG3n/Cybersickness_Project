@@ -78,7 +78,7 @@ class CameraBuffer:
                 self.frames,
                 key=lambda f:
                     abs(
-                        f.capture_ms -
+                        f.metadata.unix_ms -
                         timestamp_ms
                     )
             )
