@@ -1,110 +1,103 @@
-
 """
-Timestamp based stereo frame synchronization.
+Stereo synchronization using ESP32 capture timestamps.
 
-Uses ESP32 capture timestamps rather than PC arrival time.
+The camera acquisition threads run independently.
+This module selects matching frames after acquisition.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Deque
-from collections import deque
+from typing import Optional
 
 from tracker_types import FramePacket, SyncPair
 
 
 @dataclass
-class SyncConfig:
-    max_time_difference_ms: int = 25
-    max_buffer_size: int = 120
+class SyncStatistics:
+    pairs_created: int = 0
+    failed_matches: int = 0
+    average_delta_ms: float = 0.0
 
 
-class FrameSynchronizer:
-    def __init__(self, config: SyncConfig = SyncConfig()):
-        self.config = config
+class StereoSynchronizer:
 
-        self.left_buffer = deque(
-            maxlen=config.max_buffer_size
-        )
-
-        self.right_buffer = deque(
-            maxlen=config.max_buffer_size
-        )
-
-
-    def add_frame(self, frame: FramePacket):
-
-        if frame.camera_id == "left":
-            self.left_buffer.append(frame)
-
-        elif frame.camera_id == "right":
-            self.right_buffer.append(frame)
-
-
-    def find_match(
+    def __init__(
         self,
-        source: FramePacket,
-        candidates: Deque[FramePacket]
-    ) -> Optional[FramePacket]:
+        left_camera,
+        right_camera,
+        tolerance_ms=25
+    ):
 
-        if not candidates:
-            return None
+        self.left = left_camera
+        self.right = right_camera
 
+        self.tolerance_ms = tolerance_ms
 
-        best = min(
-            candidates,
-            key=lambda f:
-                abs(
-                    f.metadata.unix_ms -
-                    source.metadata.unix_ms
-                )
-        )
-
-
-        delta = abs(
-            best.metadata.unix_ms -
-            source.metadata.unix_ms
-        )
-
-
-        if delta <= self.config.max_time_difference_ms:
-            return best
-
-
-        return None
+        self.stats = SyncStatistics()
 
 
     def get_pair(self) -> Optional[SyncPair]:
 
-        if not self.left_buffer:
+        left_frame = self.left.oldest_frame()
+
+        if left_frame is None:
             return None
 
-        if not self.right_buffer:
-            return None
 
-
-        left = self.left_buffer[0]
-
-
-        right = self.find_match(
-            left,
-            self.right_buffer
+        # Match using ESP32 clock domain
+        right_frame = self.right.closest_to(
+            left_frame.receive_ms
         )
 
 
-        if right is None:
+        if right_frame is None:
+
+            self.stats.failed_matches += 1
+
+            # discard frames that are too old
+            self.left.pop_oldest()
+
             return None
 
 
-        self.left_buffer.remove(left)
-        self.right_buffer.remove(right)
+
+        delta = abs(
+            left_frame.capture_ms -
+            right_frame.capture_ms
+        )
+
+
+        if delta > self.tolerance_ms:
+
+            self.stats.failed_matches += 1
+
+            self.left.pop_oldest()
+
+            return None
+
+
+
+        self.left.pop_oldest()
+
+
+        self.stats.pairs_created += 1
+
+
+        self.stats.average_delta_ms = (
+            (
+                self.stats.average_delta_ms *
+                (self.stats.pairs_created - 1)
+            )
+            +
+            delta
+        ) / self.stats.pairs_created
+
 
 
         return SyncPair(
-            left=left,
-            right=right,
-            timestamp_ms=
-                min(
-                    left.metadata.unix_ms,
-                    right.metadata.unix_ms
-                )
+            left=left_frame,
+            right=right_frame,
+            timestamp_ms=min(
+                left_frame.capture_ms,
+                right_frame.capture_ms
+            )
         )
