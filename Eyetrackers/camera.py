@@ -320,6 +320,11 @@ class Camera:
             
             self.buffer.add(packet)
 
+            print(
+                "Buffered frames:",
+                len(self.buffer.frames)
+            )
+
             self.stats.frames_received += 1
             self.stats.frames_decoded += 1
 
