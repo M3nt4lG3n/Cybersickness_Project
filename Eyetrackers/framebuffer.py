@@ -1,11 +1,12 @@
 """
-Timestamp indexed frame buffer.
+Generic timestamp frame buffer.
 """
 
 from collections import deque
 
 
 class FrameBuffer:
+
 
     def __init__(
         self,
@@ -17,56 +18,48 @@ class FrameBuffer:
         )
 
 
-    def add(self, frame):
+    def add(
+        self,
+        frame
+    ):
 
         self.frames.append(frame)
 
 
+
     def closest(
         self,
-        timestamp_ms,
-        tolerance_ms
+        timestamp_ms
     ):
 
         if not self.frames:
             return None
 
 
-        best = min(
+        return min(
             self.frames,
-            key=lambda f:
-                abs(
-                    f.metadata.unix_ms -
-                    timestamp_ms
-                )
+            key=lambda frame:
+            abs(
+                frame.capture_ms -
+                timestamp_ms
+            )
         )
 
 
-        delta = abs(
-            best.metadata.unix_ms -
-            timestamp_ms
-        )
 
+    def remove_oldest(self):
 
-        if delta <= tolerance_ms:
-            return best
-
+        if self.frames:
+            return self.frames.popleft()
 
         return None
 
-
-    def remove(self, frame):
-
-        try:
-            self.frames.remove(frame)
-
-        except ValueError:
-            pass
 
 
     def clear(self):
 
         self.frames.clear()
+
 
 
     def __len__(self):
