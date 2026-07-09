@@ -79,6 +79,15 @@ FRAME_PERIOD_MS = 1000 // TARGET_FPS
 
 SYNC_WINDOW_MS = 150
 
+SYNC_TOLERANCE_MS = 25
+
+BUFFER_SIZE = 120
+
+OUTPUT_FPS = 15
+
+VIDEO_WIDTH = 320
+VIDEO_HEIGHT = 240
+
 
 # ==========================================================
 # Camera Buffers
