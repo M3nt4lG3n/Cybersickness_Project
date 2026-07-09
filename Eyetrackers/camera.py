@@ -55,9 +55,7 @@ class Camera:
         #
         # Ring buffer of FramePacket objects.
         #
-        self.buffer = deque(
-            maxlen=camera_config.buffer_size
-        )
+        self.buffer = CameraBuffer()
 
         #
         # Synchronization primitives.
@@ -256,10 +254,14 @@ class Camera:
 
         while not self.stop_event.is_set():
 
-            packet = self.stream.next_frame(
-                brightness=self.config.brightness,
-                contrast=self.config.contrast
+            packet = FramePacket(
+                image=image,
+                frame_number=frame_number,
+                capture_ms=esp_timestamp,
+                receive_ms=current_time
             )
+            
+            self.buffer.add(packet)
 
             self.stats.frames_received += 1
             self.stats.frames_decoded += 1
@@ -545,3 +547,66 @@ class Camera:
             f")"
 
         )
+
+class CameraBuffer:
+
+    def __init__(self, max_size=120):
+
+        self.frames = deque(
+            maxlen=max_size
+        )
+
+        self.lock = threading.Lock()
+
+
+    def add(self, frame):
+
+        with self.lock:
+            self.frames.append(frame)
+
+
+    def oldest(self):
+
+        with self.lock:
+
+            if not self.frames:
+                return None
+
+            return self.frames[0]
+
+
+    def remove_oldest(self):
+
+        with self.lock:
+
+            if not self.frames:
+                return None
+
+            return self.frames.popleft()
+
+
+    def closest(
+        self,
+        timestamp_ms
+    ):
+
+        with self.lock:
+
+            if not self.frames:
+                return None
+
+
+            return min(
+                self.frames,
+                key=lambda f:
+                abs(
+                    f.capture_ms -
+                    timestamp_ms
+                )
+            )
+
+
+    def size(self):
+
+        with self.lock:
+            return len(self.frames)
