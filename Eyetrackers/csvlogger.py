@@ -1,34 +1,17 @@
 """
-CSV logger for synchronized eye camera frames.
+CSV logging for synchronized stereo frames.
 """
 
 import csv
-import time
 
 
 class CSVLogger:
 
 
-    HEADER = [
-        "sync_time_ms",
-
-        "left_frame",
-        "left_capture_ms",
-        "left_receive_ms",
-
-        "right_frame",
-        "right_capture_ms",
-        "right_receive_ms",
-
-        "capture_delta_ms",
-        "receive_delta_ms",
-
-        "left_latency_ms",
-        "right_latency_ms"
-    ]
-
-
-    def __init__(self, filename):
+    def __init__(
+        self,
+        filename
+    ):
 
         self.file = open(
             filename,
@@ -40,12 +23,30 @@ class CSVLogger:
             self.file
         )
 
+
         self.writer.writerow(
-            self.HEADER
+            [
+                "sync_time_ms",
+
+                "left_frame",
+                "left_capture_ms",
+                "left_receive_ms",
+
+                "right_frame",
+                "right_capture_ms",
+                "right_receive_ms",
+
+                "capture_delta_ms",
+                "receive_delta_ms",
+
+                "left_latency_ms",
+                "right_latency_ms"
+            ]
         )
 
 
-    def log_pair(
+
+    def log(
         self,
         pair
     ):
@@ -54,40 +55,46 @@ class CSVLogger:
         right = pair.right
 
 
-        self.writer.writerow([
+        self.writer.writerow(
+            [
 
-            pair.timestamp_ms,
-
-
-            left.metadata.frame_number,
-            left.metadata.unix_ms,
-            left.receive_time_ms,
+                pair.timestamp_ms,
 
 
-            right.metadata.frame_number,
-            right.metadata.unix_ms,
-            right.receive_time_ms,
+                left.frame_number,
+                left.capture_ms,
+                left.receive_ms,
 
 
-            abs(
-                left.metadata.unix_ms -
-                right.metadata.unix_ms
-            ),
+                right.frame_number,
+                right.capture_ms,
+                right.receive_ms,
 
 
-            abs(
-                left.receive_time_ms -
-                right.receive_time_ms
-            ),
+                abs(
+                    left.capture_ms -
+                    right.capture_ms
+                ),
 
 
-            left.receive_time_ms -
-            left.metadata.unix_ms,
+                abs(
+                    left.receive_ms -
+                    right.receive_ms
+                ),
 
 
-            right.receive_time_ms -
-            right.metadata.unix_ms
-        ])
+                left.receive_ms -
+                left.capture_ms,
+
+
+                right.receive_ms -
+                right.capture_ms
+            ]
+        )
+
+
+        self.file.flush()
+
 
 
     def close(self):
