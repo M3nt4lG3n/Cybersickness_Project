@@ -1,0 +1,17 @@
+# Core numerical processing
+numpy>=2.0,<3.0
+
+# Computer vision / image processing
+opencv-python>=4.10
+
+# HTTP MJPEG stream communication
+requests>=2.32
+
+# Optional: useful for image handling/debugging
+Pillow>=10.0
+
+# Optional: plotting/debugging synchronization data
+matplotlib>=3.9
+
+# Optional: improved data handling for CSV analysis
+pandas>=2.2

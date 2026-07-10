@@ -1,24 +1,24 @@
 """
-Stereo synchronization using ESP32 capture timestamps.
+Stereo frame synchronization.
 
-The camera acquisition threads run independently.
-This module selects matching frames after acquisition.
+Matches independent ESP32 cameras using
+capture timestamps.
 """
 
 from dataclasses import dataclass
-from typing import Optional
-
-from tracker_types import FramePacket, SyncPair
-
+from tracker_types import SyncPair
 
 @dataclass
 class SyncStatistics:
-    pairs_created: int = 0
+
+    total_pairs: int = 0
     failed_matches: int = 0
     average_delta_ms: float = 0.0
 
 
+
 class StereoSynchronizer:
+
 
     def __init__(
         self,
@@ -27,42 +27,50 @@ class StereoSynchronizer:
         tolerance_ms=25
     ):
 
-        self.left = left_camera
-        self.right = right_camera
+        self.left_camera = left_camera
+        self.right_camera = right_camera
 
         self.tolerance_ms = tolerance_ms
 
         self.stats = SyncStatistics()
 
 
-    def get_pair(self) -> Optional[SyncPair]:
 
-        left_frame = self.left.oldest_frame()
+    def get_pair(self):
 
-        if left_frame is None:
+        left = self.left_camera.oldest_frame()
+
+
+        if left is None:
             return None
 
 
-        # Match using ESP32 clock domain
-        right_frame = self.right.closest_to(
-            left_frame.receive_ms
+
+        left_time = (
+            left.metadata.unix_ms
         )
 
 
-        if right_frame is None:
+        right = (
+            self.right_camera.closest_to(
+                left_time
+            )
+        )
+
+
+        if right is None:
 
             self.stats.failed_matches += 1
 
-            # discard frames that are too old
-            self.left.pop_oldest()
+            self.left_camera.pop_oldest()
 
             return None
 
 
 
         delta = abs(
-            left_frame.capture_ms -
-            right_frame.capture_ms
+            left.metadata.unix_ms -
+            right.metadata.unix_ms
         )
 
 
@@ -70,34 +78,34 @@ class StereoSynchronizer:
 
             self.stats.failed_matches += 1
 
-            self.left.pop_oldest()
+            self.left_camera.pop_oldest()
 
             return None
 
 
 
-        self.left.pop_oldest()
+        self.left_camera.pop_oldest()
 
 
-        self.stats.pairs_created += 1
+        self.stats.total_pairs += 1
 
 
         self.stats.average_delta_ms = (
+
             (
                 self.stats.average_delta_ms *
-                (self.stats.pairs_created - 1)
+                (self.stats.total_pairs - 1)
             )
             +
             delta
-        ) / self.stats.pairs_created
+
+        ) / self.stats.total_pairs
 
 
 
         return SyncPair(
-            left=left_frame,
-            right=right_frame,
-            timestamp_ms=min(
-                left_frame.capture_ms,
-                right_frame.capture_ms
-            )
+            left=left,
+            right=right,
+            sync_timestamp_ms=left_time,
+            delta_ms=delta,
         )

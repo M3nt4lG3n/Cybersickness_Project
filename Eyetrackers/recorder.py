@@ -2,17 +2,16 @@ import cv2
 import os
 import time
 
+import numpy as np
 
 class StereoRecorder:
 
-
     def __init__(
         self,
-        left_file,
-        right_file,
+        left_filename,
+        right_filename,
         fps,
-        width,
-        height
+        frame_size
     ):
 
 
@@ -21,19 +20,19 @@ class StereoRecorder:
         )
 
 
-        self.left = cv2.VideoWriter(
-            left_file,
+        self.left_writer = cv2.VideoWriter(
+            left_filename,
             fourcc,
             fps,
-            (width,height)
+            (frame_size)
         )
 
 
-        self.right = cv2.VideoWriter(
-            right_file,
+        self.right_writer = cv2.VideoWriter(
+            right_filename,
             fourcc,
             fps,
-            (width,height)
+            (frame_size)
         )
 
 
@@ -41,28 +40,18 @@ class StereoRecorder:
 
 
 
-    def write(
-        self,
-        pair
-    ):
+    def write(self, pair):
 
+        left = pair.left
+        right = pair.right
 
-        self.left.write(
-            pair.left.image
-        )
-
-
-        self.right.write(
-            pair.right.image
-        )
-
+        self.left_writer.write(left.image)
+        self.right_writer.write(right.image)
 
         self.frames += 1
 
 
 
     def close(self):
-
-        self.left.release()
-
-        self.right.release()
+        self.left_writer.release()
+        self.right_writer.release()

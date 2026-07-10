@@ -176,11 +176,13 @@ class SyncPair:
     Result returned by the synchronizer for one recording tick.
     """
 
+    left: FramePacket
+    right: FramePacket
+
+    sync_timestamp_ms: int
+    delta_ms: int
+
     tick_ms: int
-
-    left: Optional[FramePacket]
-
-    right: Optional[FramePacket]
 
     status: str
 

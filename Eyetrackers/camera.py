@@ -30,7 +30,8 @@ from tracker_types import (
     FramePacket,
 )
 
-import config
+import config 
+from framebuffer import FrameBuffer
 
 class CameraBuffer:
 
@@ -113,6 +114,7 @@ class Camera:
         # Ring buffer of FramePacket objects.
         #
         self.buffer = CameraBuffer()
+        self.buffer = FrameBuffer()
 
         #
         # Synchronization primitives.
@@ -141,6 +143,8 @@ class Camera:
         self.last_capture_timestamp: Optional[int] = None
 
         self.last_receive_timestamp: Optional[int] = None
+
+        print("Camera buffer initialized")
 
     # --------------------------------------------------
     # Lifecycle
@@ -317,8 +321,12 @@ class Camera:
                 capture_ms=esp_timestamp,
                 receive_ms=current_time
             )
-            
+
             self.buffer.add(packet)
+            print(
+                "Buffered:",
+                self.buffer.size()
+            )
 
             print(
                 "Buffered frames:",

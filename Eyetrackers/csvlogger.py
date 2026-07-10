@@ -1,17 +1,16 @@
 """
-CSV logging for synchronized stereo frames.
+CSV output for synchronized stereo frames.
 """
 
+
 import csv
+
 
 
 class CSVLogger:
 
 
-    def __init__(
-        self,
-        filename
-    ):
+    def __init__(self, filename):
 
         self.file = open(
             filename,
@@ -37,7 +36,6 @@ class CSVLogger:
                 "right_receive_ms",
 
                 "capture_delta_ms",
-                "receive_delta_ms",
 
                 "left_latency_ms",
                 "right_latency_ms"
@@ -46,10 +44,7 @@ class CSVLogger:
 
 
 
-    def log(
-        self,
-        pair
-    ):
+    def log(self, pair):
 
         left = pair.left
         right = pair.right
@@ -58,37 +53,29 @@ class CSVLogger:
         self.writer.writerow(
             [
 
-                pair.timestamp_ms,
+                pair["timestamp_ms"],
 
 
-                left.frame_number,
-                left.capture_ms,
-                left.receive_ms,
+                left.metadata.frame_number,
+                left.metadata.unix_ms,
+                left.receive_time_ms,
 
 
-                right.frame_number,
-                right.capture_ms,
-                right.receive_ms,
+                right.metadata.frame_number,
+                right.metadata.unix_ms,
+                right.receive_time_ms,
 
 
-                abs(
-                    left.capture_ms -
-                    right.capture_ms
-                ),
+                pair.delta_ms,
 
 
-                abs(
-                    left.receive_ms -
-                    right.receive_ms
-                ),
+                left.receive_time_ms -
+                left.metadata.unix_ms,
 
 
-                left.receive_ms -
-                left.capture_ms,
+                right.receive_time_ms -
+                right.metadata.unix_ms
 
-
-                right.receive_ms -
-                right.capture_ms
             ]
         )
 

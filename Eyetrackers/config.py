@@ -108,6 +108,8 @@ SATURATION = 0.0
 
 GAMMA = 1.8
 
+DRAW_DEBUG_OVERLAY = True
+
 
 # ==========================================================
 # Network
