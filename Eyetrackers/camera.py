@@ -27,69 +27,12 @@ from tracker_types import (
     CameraConfig,
     CameraState,
     CameraStatistics,
+    ESP32Metadata,
     FramePacket,
 )
 
 import config 
 from framebuffer import FrameBuffer
-
-class CameraBuffer:
-
-    def __init__(self, max_size=120):
-
-        self.frames = deque(maxlen=max_size)
-
-        self.lock = threading.Lock()
-
-
-    def add(self, frame):
-
-        with self.lock:
-            self.frames.append(frame)
-
-
-    def oldest(self):
-
-        with self.lock:
-
-            if not self.frames:
-                return None
-
-            return self.frames[0]
-
-
-    def remove_oldest(self):
-
-        with self.lock:
-
-            if not self.frames:
-                return None
-
-            return self.frames.popleft()
-
-
-    def closest(self, timestamp_ms):
-
-        with self.lock:
-
-            if not self.frames:
-                return None
-
-            return min(
-                self.frames,
-                key=lambda f:
-                    abs(
-                        f.metadata.unix_ms -
-                        timestamp_ms
-                    )
-            )
-
-
-    def clear(self):
-
-        with self.lock:
-            self.frames.clear()
-
 
 class Camera:
     """
@@ -111,9 +54,9 @@ class Camera:
         )
 
         #
-        # Ring buffer of FramePacket objects.
+        # Buffer containing FramePacket instances ordered by
+        # ESP capture timestamp.
         #
-        self.buffer = CameraBuffer()
         self.buffer = FrameBuffer()
 
         #
@@ -190,28 +133,18 @@ class Camera:
 
     def clear_buffer(self):
 
-        with self.buffer_lock:
-
-            self.buffer.clear()
+        self.buffer.clear()
 
     # --------------------------------------------------
 
     def buffer_size(self) -> int:
-
         with self.buffer_lock:
-
-            return len(self.buffer)
+            return self.buffer.size()
 
     # --------------------------------------------------
 
     def latest_frame(self) -> Optional[FramePacket]:
-
-        with self.buffer_lock:
-
-            if not self.buffer:
-                return None
-
-            return self.buffer[-1]
+        return self.buffer.newest()
 
     # --------------------------------------------------
 
@@ -220,9 +153,7 @@ class Camera:
         packet: FramePacket
     ):
 
-        with self.buffer_lock:
-
-            self.buffer.append(packet)
+        self.buffer.add(packet)
 
     # --------------------------------------------------
 
@@ -314,40 +245,47 @@ class Camera:
     def _capture_loop(self):
 
         while not self.stop_event.is_set():
+            image, frame_number, unix_ms = self.stream.read()
 
-            packet = FramePacket(
-                image=image,
+            receive_time_ms = int(time.time() * 1000)
+
+            metadata = ESP32Metadata(
                 frame_number=frame_number,
-                capture_ms=esp_timestamp,
-                receive_ms=current_time
+                capture_timestamp_ms=unix_ms,
+                receive_timestamp_ms=receive_time_ms,
+                clock_offset_ms=self.clock_offset_ms or 0,
             )
 
-            self.buffer.add(packet)
-            print(
-                "Buffered:",
-                self.buffer.size()
+            packet = self.stream.next_frame(
+                brightness=self.config.brightness,
+                contrast=self.config.contrast,
             )
 
-            print(
-                "Buffered frames:",
-                len(self.buffer.frames)
-            )
+            #
+            # Store packet.
+            #
+            self.append_frame(packet)
 
+            #
+            # Runtime statistics.
+            #
             self.stats.frames_received += 1
             self.stats.frames_decoded += 1
 
-            self.last_capture_timestamp = (
-                packet.capture_ms
-            )
+            #
+            # Latest timestamps.
+            #
+            self.last_capture_timestamp = packet.capture_ms
+            self.last_receive_timestamp = packet.receive_ms
 
-            self.last_receive_timestamp = (
-                packet.receive_ms
-            )
-
+            #
+            # Refine clock estimate.
+            #
             self._update_clock_offset(packet)
 
-            self.append_frame(packet)
-
+            #
+            # FPS reporting.
+            #
             self._update_fps()
 
     # --------------------------------------------------
@@ -359,9 +297,12 @@ class Camera:
         packet: FramePacket
     ):
 
-        newest_offset = (
-            packet.receive_ms -
-            packet.capture_ms
+        newest_offset = packet.metadata.clock_offset_ms
+
+        print(
+            packet.metadata.frame_number,
+            packet.metadata.unix_ms,
+            packet.metadata.latency_ms,
         )
 
         #
@@ -484,31 +425,9 @@ class Camera:
 
     # --------------------------------------------------
 
-    def oldest_frame(self) -> Optional[FramePacket]:
-
-        with self.buffer_lock:
-
-            if not self.buffer:
-                return None
-
-            return self.buffer[0]
-
-    # --------------------------------------------------
-
     def newest_frame(self) -> Optional[FramePacket]:
 
         return self.latest_frame()
-
-    # --------------------------------------------------
-
-    def pop_oldest(self) -> Optional[FramePacket]:
-
-        with self.buffer_lock:
-
-            if not self.buffer:
-                return None
-
-            return self.buffer.popleft()
 
     # --------------------------------------------------
 
@@ -516,33 +435,9 @@ class Camera:
         self,
         capture_timestamp_ms: int
     ) -> int:
-        """
-        Remove frames older than the specified capture time.
-
-        Returns
-        -------
-        int
-            Number of discarded frames.
-        """
-
-        removed = 0
-
-        with self.buffer_lock:
-
-            while self.buffer:
-
-                if (
-                    self.buffer[0].capture_ms
-                    >=
-                    capture_timestamp_ms
-                ):
-                    break
-
-                self.buffer.popleft()
-
-                removed += 1
-
-        return removed
+        return self.buffer.remove_before(
+            capture_timestamp_ms
+        )
 
     # --------------------------------------------------
 
@@ -588,35 +483,13 @@ class Camera:
 
     def __iter__(self):
 
-        with self.buffer_lock:
-
-            #
-            # Iterate over a snapshot so the acquisition
-            # thread can continue writing without blocking.
-            #
-            return iter(
-                list(self.buffer)
-            )
+        return iter(self.buffer.snapshot())
 
     # --------------------------------------------------
 
     def __repr__(self):
 
-        return (
-
-            f"Camera("
-
-            f"name={self.config.name!r}, "
-
-            f"state={self.state.name}, "
-
-            f"frames={len(self.buffer)}, "
-
-            f"fps={self.stats.fps:.1f}"
-
-            f")"
-
-        )
+        frames={self.buffer.size()}
 
     def oldest_frame(self):
 

@@ -21,13 +21,13 @@ class StereoDisplay:
         right_meta = pair.right.metadata
 
         left_text = (
-            f"L #{left_meta.frame_number} "
-            f"{left_meta.unix_ms}"
+            f"L Frame:{left_meta.frame_number} "
+            f"Time:{left_meta.unix_ms}"
         )
 
         right_text = (
-            f"R #{right_meta.frame_number} "
-            f"{right_meta.unix_ms}"
+            f"R Frame:{right_meta.frame_number} "
+            f"Time:{right_meta.unix_ms}"
         )
 
         delta_text = (
@@ -51,22 +51,52 @@ class StereoDisplay:
             ]
         )
 
+        combined = combined.copy()
+
 
         cv2.putText(
             combined,
             left_text,
-            right_text,
-            delta_text,
-            latency_text,
-            (20,40),
+            (20, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0,255,0),
-            2
+            0.6,
+            (0, 255, 0),
+            2,
+        )
+
+        cv2.putText(
+            combined,
+            right_text,
+            (left.shape[1] + 20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+        )
+
+        cv2.putText(
+            combined,
+            delta_text,
+            (20, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+        )
+
+        cv2.putText(
+            combined,
+            latency_text,
+            (20, 90),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 0),
+            2,
         )
 
 
-        cv2.imshow(title, combined)
+        cv2.setWindowTitle("Stereo", title)
+        cv2.imshow("Stereo", combined)
 
 
         return cv2.waitKey(1)
