@@ -329,41 +329,41 @@ class MJPEGStream:
         # Iterator support
         # ------------------------------------------------------
 
-        def __iter__(self):
-            """
-            Allow:
+    def __iter__(self):
+        """
+        Allow:
 
-                for frame in stream:
+            for frame in stream:
 
-                    ...
-            """
+                ...
+        """
 
-            return self
+        return self
 
-        def __next__(self) -> FramePacket:
+    def __next__(self) -> FramePacket:
 
-            return self.next_frame()
+        return self.next_frame()
 
-        # ------------------------------------------------------
-        # Context manager support
-        # ------------------------------------------------------
+    # ------------------------------------------------------
+    # Context manager support
+    # ------------------------------------------------------
 
-        def __enter__(self):
+    def __enter__(self):
 
-            self.connect()
+        self.connect()
 
-            return self
+        return self
 
-        def __exit__(
-                self,
-                exc_type,
-                exc_value,
-                traceback
-        ):
+    def __exit__(
+            self,
+            exc_type,
+            exc_value,
+            traceback
+    ):
 
-            self.disconnect()
+        self.disconnect()
 
-            return False
+        return False
 
     # ==========================================================
     # Convenience function

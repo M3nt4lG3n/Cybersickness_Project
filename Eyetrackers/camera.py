@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
 from typing import Optional
 
 from mjpeg import MJPEGStream, StreamDisconnected
@@ -27,7 +26,6 @@ from tracker_types import (
     CameraConfig,
     CameraState,
     CameraStatistics,
-    ESP32Metadata,
     FramePacket,
 )
 
@@ -240,7 +238,7 @@ class Camera:
                 contrast=self.config.contrast,
             )
 
-            self.buffer.add(packet)
+            self.append_frame(packet)
 
             self.stats.frames_received += 1
             self.stats.frames_decoded += 1
@@ -263,11 +261,13 @@ class Camera:
 
         newest_offset = packet.metadata.clock_offset_ms
 
-        print(
-            packet.metadata.frame_number,
-            packet.metadata.unix_ms,
-            packet.metadata.latency_ms,
-        )
+        if config.DEBUG_TIMESTAMPS:
+            print(
+                f"[{self.config.name}] "
+                f"Frame {packet.frame_number} "
+                f"Capture={packet.capture_ms} "
+                f"Latency={packet.latency_ms} ms"
+            )
 
         #
         # Initialize from the first frame.
@@ -343,6 +343,10 @@ class Camera:
     def newest_frame(self) -> Optional[FramePacket]:
 
         return self.latest_frame()
+    
+    @property
+    def frame_count(self) -> int:
+        return self.buffer.size()
 
     # --------------------------------------------------
 
@@ -403,7 +407,14 @@ class Camera:
     # --------------------------------------------------
 
     def __repr__(self):
-        frames={self.buffer.size()}
+        return (
+            f"Camera("
+            f"name={self.config.name!r}, "
+            f"state={self.state.name}, "
+            f"frames={self.buffer.size()}, "
+            f"fps={self.stats.fps:.1f}"
+            f")"
+        )
 
     def oldest_frame(self):
         return self.buffer.oldest()

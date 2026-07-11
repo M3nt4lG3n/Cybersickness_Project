@@ -24,7 +24,7 @@ class StereoSynchronizer:
         self,
         left_camera,
         right_camera,
-        tolerance_ms=25
+        tolerance_ms: int = 25
     ):
 
         self.left_camera = left_camera
@@ -33,6 +33,13 @@ class StereoSynchronizer:
         self.tolerance_ms = tolerance_ms
 
         self.stats = SyncStatistics()
+
+    @property
+    def success_rate(self):
+        return (self.stats.total_pairs / (
+        self.stats.total_pairs +
+        self.stats.failed_matches
+        ))
 
 
 
@@ -46,15 +53,11 @@ class StereoSynchronizer:
 
 
 
-        left_time = (
-            left.metadata.unix_ms
-        )
+        left_time = left.capture_ms
 
 
-        right = (
-            self.right_camera.closest_to(
-                left_time
-            )
+        right = self.right_camera.buffer.closest(
+            left_time
         )
 
 
@@ -69,8 +72,8 @@ class StereoSynchronizer:
 
 
         delta = abs(
-            left.metadata.unix_ms -
-            right.metadata.unix_ms
+            left.capture_ms -
+            right.capture_ms
         )
 
 
@@ -106,6 +109,9 @@ class StereoSynchronizer:
         return SyncPair(
             left=left,
             right=right,
-            sync_timestamp_ms=left_time,
+            sync_timestamp_ms = min(
+                left.capture_ms,
+                right.capture_ms
+            ),
             delta_ms=delta,
         )
