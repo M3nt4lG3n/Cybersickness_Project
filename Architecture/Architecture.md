@@ -1,5 +1,11 @@
 # Eyetrackers Architecture
 
+## Last Edit
+
+Architecture Version: 1.0
+Last Updated: 2026-07-11
+Status: Active
+
 ## Overview
 
 The Eyetrackers subsystem is responsible for acquiring synchronized stereo eye-tracking video from two ESP32-S3 cameras and producing synchronized outputs for recording, display, and analysis.
