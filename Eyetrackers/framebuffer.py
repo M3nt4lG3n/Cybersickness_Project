@@ -72,3 +72,7 @@ class FrameBuffer:
 
         with self.lock:
             return len(self.frames)
+        
+    def snapshot(self):
+        with self.lock:
+            return list(self.frames)

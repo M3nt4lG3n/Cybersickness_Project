@@ -59,11 +59,6 @@ class Camera:
         #
         self.buffer = FrameBuffer()
 
-        #
-        # Synchronization primitives.
-        #
-        self.buffer_lock = threading.Lock()
-
         self.stop_event = threading.Event()
 
         self.thread: Optional[threading.Thread] = None
@@ -138,8 +133,7 @@ class Camera:
     # --------------------------------------------------
 
     def buffer_size(self) -> int:
-        with self.buffer_lock:
-            return self.buffer.size()
+        return self.buffer.size()
 
     # --------------------------------------------------
 
@@ -148,11 +142,7 @@ class Camera:
 
     # --------------------------------------------------
 
-    def append_frame(
-        self,
-        packet: FramePacket
-    ):
-
+    def append_frame(self, packet: FramePacket):
         self.buffer.add(packet)
 
     # --------------------------------------------------
@@ -245,47 +235,21 @@ class Camera:
     def _capture_loop(self):
 
         while not self.stop_event.is_set():
-            image, frame_number, unix_ms = self.stream.read()
-
-            receive_time_ms = int(time.time() * 1000)
-
-            metadata = ESP32Metadata(
-                frame_number=frame_number,
-                capture_timestamp_ms=unix_ms,
-                receive_timestamp_ms=receive_time_ms,
-                clock_offset_ms=self.clock_offset_ms or 0,
-            )
-
             packet = self.stream.next_frame(
                 brightness=self.config.brightness,
                 contrast=self.config.contrast,
             )
 
-            #
-            # Store packet.
-            #
-            self.append_frame(packet)
+            self.buffer.add(packet)
 
-            #
-            # Runtime statistics.
-            #
             self.stats.frames_received += 1
             self.stats.frames_decoded += 1
 
-            #
-            # Latest timestamps.
-            #
             self.last_capture_timestamp = packet.capture_ms
             self.last_receive_timestamp = packet.receive_ms
 
-            #
-            # Refine clock estimate.
-            #
             self._update_clock_offset(packet)
 
-            #
-            # FPS reporting.
-            #
             self._update_fps()
 
     # --------------------------------------------------
@@ -375,55 +339,6 @@ class Camera:
         self.stats.last_report_time = now
 
     # --------------------------------------------------
-    # Synchronization API
-    # --------------------------------------------------
-
-    def closest_to(
-        self,
-        target_receive_ms: int
-    ) -> Optional[FramePacket]:
-        """
-        Return the buffered frame whose capture timestamp is
-        closest to the requested PC receive time.
-
-        The PC timestamp is converted into the ESP32 clock
-        domain using the current clock offset estimate.
-        """
-
-        if self.clock_offset_ms is None:
-            return None
-
-        target_capture_ms = (
-            target_receive_ms -
-            self.clock_offset_ms
-        )
-
-        with self.buffer_lock:
-
-            if not self.buffer:
-                return None
-
-            best = min(
-                self.buffer,
-                key=lambda packet: abs(
-                    packet.capture_ms -
-                    target_capture_ms
-                )
-            )
-
-        if (
-            abs(
-                best.capture_ms -
-                target_capture_ms
-            )
-            >
-            self.config.sync_window_ms
-        ):
-            return None
-
-        return best
-
-    # --------------------------------------------------
 
     def newest_frame(self) -> Optional[FramePacket]:
 
@@ -488,23 +403,10 @@ class Camera:
     # --------------------------------------------------
 
     def __repr__(self):
-
         frames={self.buffer.size()}
 
     def oldest_frame(self):
-
         return self.buffer.oldest()
 
-
-
     def pop_oldest(self):
-    
         return self.buffer.remove_oldest()
-    
-    
-    
-    def closest_to(self, timestamp_ms):
-    
-        return self.buffer.closest(
-            timestamp_ms
-        )
