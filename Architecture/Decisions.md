@@ -227,6 +227,56 @@ Single ownership eliminates ambiguity and duplicated construction logic.
 
 ------------------------------------------------------------------------
 
+# ADR-010
+
+## Decision
+
+Experiment directory creation belongs to the Experiment Manager.
+
+## Reason
+
+Eyetrackers should remain reusable as an independent subsystem.
+
+## Consequences
+
+Eyetrackers receives output directories from the launcher.
+
+------------------------------------------------------------------------
+
+# ADR-011
+
+## Decision
+
+Validation tools execute after acquisition.
+
+## Reason
+
+Validation analyzes completed recordings.
+
+It is not involved in synchronization or acquisition.
+
+## Consequences
+
+Validation can never interfere with recording performance.
+
+------------------------------------------------------------------------
+
+# ADR-012
+
+## Decision
+
+Recorder stores original images only.
+
+## Reason
+
+Recorded data should remain unmodified.
+
+## Consequences
+
+Display overlays are rendered separately.
+
+------------------------------------------------------------------------
+
 # Proposed Future Decisions
 
 These topics may require future ADRs:

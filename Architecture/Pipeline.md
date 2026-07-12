@@ -77,6 +77,30 @@ Recorder      CSVLogger      Display
 
 ------------------------------------------------------------------------
 
+## Recording Lifecycle
+
+1. Experiment Manager creates the patient directory.
+2. Experiment Manager creates subsystem output directories.
+3. Cameras connect.
+4. Recorder opens output files.
+5. CSVLogger opens output CSV.
+6. Acquisition begins.
+7. StereoSynchronizer produces SyncPairs.
+8. Recorder writes original images.
+9. CSVLogger writes synchronization metadata.
+10. Display renders overlays.
+11. Recorder closes.
+12. CSVLogger closes.
+13. Validation tools analyze the completed recording.
+
+Validation is not part of acquisition.
+
+Validation tools never modify recorded data.
+
+Validation tools only read completed recordings.
+
+------------------------------------------------------------------------
+
 # Future Pipeline Extensions
 
 Possible future stages:

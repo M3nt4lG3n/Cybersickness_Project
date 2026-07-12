@@ -155,6 +155,54 @@ throughout the pipeline.
 
 ------------------------------------------------------------------------
 
+## Validation Tools
+
+## Status
+
+Planned / In Progress
+
+## Modules
+
+validate_session.py
+
+## Purpose
+
+Post-acquisition quality assurance.
+
+## Input
+
+Completed recordings.
+
+## Output
+
+Human-readable validation report.
+
+------------------------------------------------------------------------
+
+## plot_session.py
+
+## Status
+
+Planned
+
+## Purpose
+
+Visualize synchronization quality.
+
+------------------------------------------------------------------------
+
+## playback.py
+
+## Status
+
+Planned
+
+## Purpose
+
+Replay synchronized recordings with metadata overlays.
+
+------------------------------------------------------------------------
+
 # Definition of Done
 
 The Eyetrackers refactor will be considered complete when:

@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 import requests
 
-from tracker_types import ESP32Metadata, FramePacket
+from Eyetrackers.Core.tracker_types import ESP32Metadata, FramePacket
 import config
 
 

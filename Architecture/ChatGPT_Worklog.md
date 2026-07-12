@@ -185,6 +185,26 @@ Display
 
 ---
 
+## Major Refactor
+
+Completed
+
+- Camera cleanup completed.
+- Synchronizer migrated fully to SyncPair.
+- FrameBuffer updated to support consume_closest().
+- Launcher-style main.py generated.
+- Comprehensive regression test suite designed.
+- Session validation tool designed.
+
+Architectural Changes
+
+- Experiment Manager introduced above Eyetrackers.
+- Validation separated from acquisition.
+- Patient recording directories adopted.
+- Output structure expanded to support future Unity and LabScribe integration.
+
+---
+
 # Remaining Work
 
 ## High Priority

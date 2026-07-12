@@ -97,19 +97,31 @@ All downstream modules consume these objects without modifying them.
 Data flows in one direction.
 
 ```
-ESP32
-    ↓
+Experiment Manager
+        │
+        ▼
+Patient Recording Directory
+        │
+        ▼
+Eyetrackers
+        │
+        ▼
 MJPEGStream
-    ↓
-FramePacket
-    ↓
+        │
+        ▼
+Camera
+        │
+        ▼
 FrameBuffer
-    ↓
+        │
+        ▼
 StereoSynchronizer
-    ↓
+        │
+        ▼
 SyncPair
-    ↓
-Consumers
+ ├──────────┬───────────┐
+ ▼          ▼           ▼
+Recorder  CSVLogger  Display
 ```
 
 Modules should not modify objects created earlier in the pipeline.
@@ -300,3 +312,21 @@ These additions should consume the existing pipeline rather than replacing it.
 The project is actively transitioning from dictionary-based communication to strongly typed dataclasses.
 
 Future development should preserve this architecture unless a documented architectural decision supersedes it.
+
+## Experiment Layer
+
+The Eyetrackers subsystem is designed to operate as one component of a larger
+Cybersickness experiment.
+
+An Experiment Manager is responsible for:
+
+- Creating the patient recording directory.
+- Generating a unique timestamp for each recording.
+- Creating subsystem output folders.
+- Launching each subsystem.
+- Providing output paths to each subsystem.
+- Coordinating shutdown.
+
+Eyetrackers does not create patient folders.
+Eyetrackers only writes data into the directory assigned by the Experiment
+Manager.

@@ -1,8 +1,8 @@
 import cv2
 import numpy as np
 
-from tracker_types import SyncPair
-class StereoDisplay:
+from Eyetrackers.Core.tracker_types import SyncPair
+class Display:
 
 
     def __init__(self):
@@ -17,17 +17,14 @@ class StereoDisplay:
         left = pair.left.image
         right = pair.right.image
 
-        left_meta = pair.left.metadata
-        right_meta = pair.right.metadata
-
         left_text = (
-            f"L Frame:{left_meta.frame_number} "
-            f"Time:{left_meta.unix_ms}"
+            f"L Frame:{pair.left.frame_number} "
+            f"Time:{pair.left.capture_ms}"
         )
 
         right_text = (
-            f"R Frame:{right_meta.frame_number} "
-            f"Time:{right_meta.unix_ms}"
+            f"R Frame:{pair.right.frame_number} "
+            f"Time:{pair.right.capture_ms}"
         )
 
         delta_text = (
@@ -35,8 +32,8 @@ class StereoDisplay:
         )
 
         latency_text = (
-            f"Lag L:{left_meta.latency_ms} "
-            f"R:{right_meta.latency_ms}"
+            f"Lag L:{pair.left.latency_ms} "
+            f"R:{pair.right.latency_ms}"
         )
 
         title = (

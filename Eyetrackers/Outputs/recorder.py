@@ -4,7 +4,9 @@ import time
 
 import numpy as np
 
-class StereoRecorder:
+from Eyetrackers.Core.tracker_types import SyncPair
+
+class Recorder:
 
     def __init__(
         self,
@@ -40,7 +42,10 @@ class StereoRecorder:
 
 
 
-    def write(self, pair):
+    def write(
+        self,
+        pair: SyncPair,
+    ) -> None:
 
         left = pair.left
         right = pair.right
@@ -52,6 +57,6 @@ class StereoRecorder:
 
 
 
-    def close(self):
+    def close(self) -> None:
         self.left_writer.release()
         self.right_writer.release()

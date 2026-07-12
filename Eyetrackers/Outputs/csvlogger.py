@@ -44,7 +44,7 @@ class CSVLogger:
 
 
 
-    def log(self, pair):
+    def write(self, pair):
 
         left = pair.left
         right = pair.right
@@ -53,28 +53,26 @@ class CSVLogger:
         self.writer.writerow(
             [
 
-                pair["timestamp_ms"],
+                pair.sync_timestamp_ms,
 
 
-                left.metadata.frame_number,
-                left.metadata.unix_ms,
-                left.receive_time_ms,
+                left.frame_number,
+                left.capture_ms,
+                left.receive_ms,
 
 
-                right.metadata.frame_number,
-                right.metadata.unix_ms,
-                right.receive_time_ms,
+                right.frame_number,
+                right.capture_ms,
+                right.receive_ms,
 
 
                 pair.delta_ms,
 
 
-                left.receive_time_ms -
-                left.metadata.unix_ms,
+                left.latency_ms,
 
 
-                right.receive_time_ms -
-                right.metadata.unix_ms
+                right.latency_ms
 
             ]
         )

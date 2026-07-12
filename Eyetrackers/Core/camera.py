@@ -21,8 +21,8 @@ import threading
 import time
 from typing import Optional
 
-from mjpeg import MJPEGStream, StreamDisconnected
-from tracker_types import (
+from Eyetrackers.Core.mjpeg import MJPEGStream, StreamDisconnected
+from Eyetrackers.Core.tracker_types import (
     CameraConfig,
     CameraState,
     CameraStatistics,
@@ -30,7 +30,7 @@ from tracker_types import (
 )
 
 import config 
-from framebuffer import FrameBuffer
+from Eyetrackers.Core.framebuffer import FrameBuffer
 
 class Camera:
     """
@@ -130,6 +130,16 @@ class Camera:
 
     # --------------------------------------------------
 
+    def has_frames(self) -> bool:
+        return self.has_frames()
+
+    # --------------------------------------------------
+
+    def buffer_empty(self) -> bool:
+        return self.buffer_size() == 0
+    
+    # --------------------------------------------------
+
     def buffer_size(self) -> int:
         return self.buffer.size()
 
@@ -137,6 +147,36 @@ class Camera:
 
     def latest_frame(self) -> Optional[FramePacket]:
         return self.buffer.newest()
+
+    # --------------------------------------------------
+
+    def closest_frame(
+        self,
+        capture_timestamp_ms: int,
+        tolerance_ms: int
+    ) -> Optional[FramePacket]:
+        """
+        Return the frame whose capture timestamp is
+        closest to the requested timestamp.
+        """
+        return self.buffer.closest(
+            capture_timestamp_ms,
+            tolerance_ms,
+        )
+    
+    def consume_closest(
+        self,
+        capture_timestamp_ms: int,
+        tolerance_ms: int,
+    ) -> Optional[FramePacket]:
+        """
+        Return and remove the closest frame within the
+        specified tolerance.
+        """
+        return self.buffer.consume_closest(
+            capture_timestamp_ms,
+            tolerance_ms,
+        )
 
     # --------------------------------------------------
 
@@ -154,7 +194,7 @@ class Camera:
 
         while time.time() < deadline:
 
-            if self.buffer_size() > 0:
+            if self.has_frames():
                 return True
 
             time.sleep(0.01)
@@ -172,6 +212,10 @@ class Camera:
             and
             self.thread.is_alive()
         )
+    
+    @property
+    def connected(self) -> bool:
+        return self.state is CameraState.STREAMING
 
     # --------------------------------------------------
     # Acquisition thread
@@ -233,10 +277,25 @@ class Camera:
     def _capture_loop(self):
 
         while not self.stop_event.is_set():
-            packet = self.stream.next_frame(
-                brightness=self.config.brightness,
-                contrast=self.config.contrast,
-            )
+
+            try:
+
+                packet = self.stream.next_frame(
+                    brightness=self.config.brightness,
+                    contrast=self.config.contrast,
+                )
+
+            except StreamDisconnected:
+                raise
+
+            except Exception as exc:
+
+                print(
+                    f"[{self.config.name}] "
+                    f"Frame decode failed: {exc}"
+                )
+
+                continue
 
             self.append_frame(packet)
 
@@ -381,7 +440,7 @@ class Camera:
                 self.clock_offset_ms
                 is not None
                 and
-                self.buffer_size() > 0
+                self.has_frames()
             ):
                 return True
 
@@ -391,6 +450,14 @@ class Camera:
             time.sleep(0.01)
 
         return False
+    
+    # --------------------------------------------------
+
+    def statistics(self) -> CameraStatistics:
+        """
+        Return the runtime statistics object.
+        """
+        return self.stats
 
     # --------------------------------------------------
 
@@ -400,9 +467,15 @@ class Camera:
 
     # --------------------------------------------------
 
+    def snapshot(self):
+        """
+        Return a snapshot of the current buffer contents.
+        """
+        return self.buffer.snapshot()
+
     def __iter__(self):
 
-        return iter(self.buffer.snapshot())
+        return iter(self.snapshot())
 
     # --------------------------------------------------
 
@@ -416,8 +489,19 @@ class Camera:
             f")"
         )
 
-    def oldest_frame(self):
+    def oldest_frame(self) -> Optional[FramePacket]:
         return self.buffer.oldest()
 
-    def pop_oldest(self):
+    def pop_oldest(self) -> Optional[FramePacket]:
+        return self.buffer.remove_oldest()
+    
+    # --------------------------------------------------
+
+    def consume_oldest(self) -> Optional[FramePacket]:
+        """
+        Remove and return the oldest buffered frame.
+
+        This is the preferred API for consumers that process
+        frames sequentially.
+        """
         return self.buffer.remove_oldest()

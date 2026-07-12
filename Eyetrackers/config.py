@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tracker_types import CameraConfig
+from Eyetrackers.Core.tracker_types import CameraConfig
 
 
 # ==========================================================

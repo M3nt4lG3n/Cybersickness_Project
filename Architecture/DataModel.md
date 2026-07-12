@@ -270,6 +270,36 @@ Potential fields:
 
 ---
 
+## Recording Outputs
+
+Recorder produces:
+
+- left_eye.mp4
+- right_eye.mp4
+
+CSVLogger produces:
+
+- eyetracker.csv
+
+Validation tools produce:
+
+- eyetracker_validation.txt
+
+Future tools may additionally generate:
+
+- synchronization plots
+- playback diagnostics
+
+FramePacket.image
+
+Always stores the original image received from the ESP32.
+
+No overlays may be written into this image.
+
+Display modules must render overlays on image copies.
+
+---
+
 # Design Rules
 
 1. Every object has exactly one owner.
