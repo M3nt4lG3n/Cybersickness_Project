@@ -29,7 +29,7 @@ from Eyetrackers.Core.tracker_types import (
     FramePacket,
 )
 
-import config 
+from Eyetrackers.Core import config
 from Eyetrackers.Core.framebuffer import FrameBuffer
 
 class Camera:

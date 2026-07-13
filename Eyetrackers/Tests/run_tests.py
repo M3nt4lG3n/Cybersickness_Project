@@ -4,14 +4,14 @@ Eyetrackers Regression Test Runner.
 
 import time
 
-from test_tracker_types import run as tracker_types_test
-from test_framebuffer import run as framebuffer_test
-from test_sync import (
+from Eyetrackers.Tests.test_tracker_types import run as tracker_types_test
+from Eyetrackers.Tests.test_framebuffer import run as framebuffer_test
+from Eyetrackers.Tests.test_sync import (
     run as sync_test,
     failure_test,
     no_reuse_test,
 )
-from test_pipeline import (
+from Eyetrackers.Tests.test_pipeline import (
     run as pipeline_test,
     jitter_test,
     dropped_frame_test,
@@ -20,9 +20,9 @@ from test_pipeline import (
     buffer_cleanup_test,
     out_of_order_test,
 )
-from test_recorder import run as recorder_test
-from test_csvlogger import run as csvlogger_test
-from test_display import run as display_test
+from Eyetrackers.Tests.test_recorder import run as recorder_test
+from Eyetrackers.Tests.test_csvlogger import run as csvlogger_test
+from Eyetrackers.Tests.test_display import run as display_test
 
 
 def main():

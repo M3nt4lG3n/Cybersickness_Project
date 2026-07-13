@@ -42,8 +42,8 @@ def make_packet(frame_number):
 
     metadata = ESP32Metadata(
         frame_number=frame_number,
-        unix_ms=frame_number * 33,
-        receive_ms=frame_number * 33 + 5,
+        capture_timestamp_ms=frame_number * 33,
+        receive_timestamp_ms=frame_number * 33 + 5,
         clock_offset_ms=5,
     )
 

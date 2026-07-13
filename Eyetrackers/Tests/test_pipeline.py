@@ -29,8 +29,8 @@ def make_packet(frame_number, capture_ms):
 
     metadata = ESP32Metadata(
         frame_number=frame_number,
-        unix_ms=capture_ms,
-        receive_ms=capture_ms + 5,
+        capture_timestamp_ms=capture_ms,
+        receive_timestamp_ms=capture_ms + 5,
         clock_offset_ms=5,
     )
 
@@ -343,24 +343,6 @@ def long_session_test():
 
     frames = 5000
 
-    for i in range(frames):
-
-        timestamp = i * 33
-
-        left.append_frame(
-            make_packet(
-                i,
-                timestamp,
-            )
-        )
-
-        right.append_frame(
-            make_packet(
-                i,
-                timestamp + 2,
-            )
-        )
-
     sync = StereoSynchronizer(
         left,
         right,
@@ -369,6 +351,21 @@ def long_session_test():
 
     count = 0
 
+    for i in range(frames):
+
+        timestamp = i * 33
+
+        left.append_frame(make_packet(i, timestamp))
+        right.append_frame(make_packet(i, timestamp + 2))
+
+        pair = sync.get_pair()
+
+        if pair is not None:
+            count += 1
+
+    #
+    # Flush any remaining packets
+    #
     while True:
 
         pair = sync.get_pair()
@@ -377,6 +374,12 @@ def long_session_test():
             break
 
         count += 1
+
+    assert count == frames
+
+    print(f"Pairs: {count}")
+    print(f"Left remaining : {left.buffer_size()}")
+    print(f"Right remaining: {right.buffer_size()}")
 
     assert count == frames
 
@@ -453,7 +456,7 @@ def out_of_order_test():
         #
         # Simulate receive time
         #
-        packet.metadata.receive_ms = capture + 5
+        packet.metadata.receive_timestamp_ms = capture + 5
 
         left.append_frame(packet)
 
@@ -481,7 +484,7 @@ def out_of_order_test():
 
         packet = make_packet(i, capture)
 
-        packet.metadata.receive_ms = (
+        packet.metadata.receive_timestamp_ms = (
             capture +
             receive_offsets[i]
         )

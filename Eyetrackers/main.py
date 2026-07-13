@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-import config
+import Eyetrackers.Core.config as config
 
 from Eyetrackers.Core.camera import Camera
 from Eyetrackers.Outputs.csvlogger import CSVLogger
@@ -57,14 +57,14 @@ def create_components() -> Application:
 
     left_config = CameraConfig(
         name="LEFT",
-        stream_url=config.LEFT_CAMERA_URL,
+        stream_url=config.LEFT_STREAM,
         brightness=config.BRIGHTNESS,
         contrast=config.CONTRAST,
     )
 
     right_config = CameraConfig(
         name="RIGHT",
-        stream_url=config.RIGHT_CAMERA_URL,
+        stream_url=config.RIGHT_STREAM,
         brightness=config.BRIGHTNESS,
         contrast=config.CONTRAST,
     )

@@ -151,7 +151,7 @@ class CameraConfig:
 
     stream_url: str
 
-    output_video: str
+    output_video: str | None = None
 
     buffer_size: int = 45
 
@@ -181,14 +181,6 @@ class SyncPair:
 
     sync_timestamp_ms: int
     delta_ms: int
-
-    tick_ms: int
-
-    status: str
-
-    @property
-    def dropped(self) -> bool:
-        return self.left is None or self.right is None
 
     @property
     def capture_delta_ms(self) -> Optional[int]:

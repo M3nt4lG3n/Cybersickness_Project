@@ -6,6 +6,7 @@ capture timestamps.
 """
 
 from typing import Optional
+from dataclasses import dataclass
 
 from Eyetrackers.Core.camera import Camera
 from Eyetrackers.Core.tracker_types import SyncPair

@@ -21,9 +21,9 @@ def make_packet(frame_number: int, capture_ms: int):
 
     metadata = ESP32Metadata(
         frame_number=frame_number,
-        unix_ms=capture_ms,
-        receive_ms=capture_ms + 5,
-        clock_offset_ms=5,
+        capture_timestamp_ms=capture_ms,
+        receive_timestamp_ms=capture_ms + 5,
+        clock_offset_ms=8,
     )
 
     return FramePacket(
@@ -37,6 +37,7 @@ def make_camera(name: str):
     cfg = CameraConfig(
         name=name,
         stream_url="http://dummy",
+        output_video="dummy.mp4",
         brightness=0,
         contrast=0,
     )

@@ -21,7 +21,7 @@ import numpy as np
 import requests
 
 from Eyetrackers.Core.tracker_types import ESP32Metadata, FramePacket
-import config
+from Eyetrackers.Core import config
 
 
 # ==========================================================
@@ -392,8 +392,6 @@ class MJPEGStream:
     # ==========================================================
 
     if __name__ == "__main__":
-
-        import config
 
         print("Opening MJPEG stream...")
 

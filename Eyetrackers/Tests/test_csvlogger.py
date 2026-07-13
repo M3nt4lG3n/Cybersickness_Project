@@ -27,8 +27,8 @@ def make_packet(frame_number, capture_ms):
 
     metadata = ESP32Metadata(
         frame_number=frame_number,
-        unix_ms=capture_ms,
-        receive_ms=capture_ms + 5,
+        capture_timestamp_ms=capture_ms,
+        receive_timestamp_ms=capture_ms + 5,
         clock_offset_ms=5,
     )
 
@@ -93,7 +93,7 @@ def run():
         assert int(first["left_capture_ms"]) == 0
         assert int(first["right_capture_ms"]) == 2
 
-        assert int(first["delta_ms"]) == 2
+        assert int(first["capture_delta_ms"]) == 2
 
         #
         # Verify last row.
