@@ -131,7 +131,7 @@ class Camera:
     # --------------------------------------------------
 
     def has_frames(self) -> bool:
-        return self.has_frames()
+        return self.buffer.size() > 0
 
     # --------------------------------------------------
 

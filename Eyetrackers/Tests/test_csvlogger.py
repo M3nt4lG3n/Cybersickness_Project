@@ -87,13 +87,13 @@ def run():
 
         first = rows[0]
 
-        assert int(first["left_frame"]) == 0
-        assert int(first["right_frame"]) == 0
+        assert int(first["LeftFrame"]) == 0
+        assert int(first["RightFrame"]) == 0
 
-        assert int(first["left_capture_ms"]) == 0
-        assert int(first["right_capture_ms"]) == 2
+        assert int(first["LeftCaptureMs"]) == 0
+        assert int(first["RightCaptureMs"]) == 2
 
-        assert int(first["capture_delta_ms"]) == 2
+        assert int(first["CaptureDeltaMs"]) == 2
 
         #
         # Verify last row.
@@ -101,8 +101,8 @@ def run():
 
         last = rows[-1]
 
-        assert int(last["left_frame"]) == NUM_ROWS - 1
-        assert int(last["right_frame"]) == NUM_ROWS - 1
+        assert int(last["LeftFrame"]) == NUM_ROWS - 1
+        assert int(last["RightFrame"]) == NUM_ROWS - 1
 
         print("PASS")
 

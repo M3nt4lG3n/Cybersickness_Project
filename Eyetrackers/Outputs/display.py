@@ -1,16 +1,43 @@
 import cv2
 import numpy as np
 
+from Eyetrackers.Core import config
 from Eyetrackers.Core.tracker_types import SyncPair
 class Display:
 
-
     def __init__(self):
 
+        self.window_name = "Eyetrackers"
+
         cv2.namedWindow(
-            "Stereo",
-            cv2.WINDOW_NORMAL
+            self.window_name,
+            cv2.WINDOW_NORMAL,
         )
+
+        #
+        # Window state
+        #
+        self._should_close = False
+        self._frames_displayed = 0
+
+    # ==========================================================
+    # Properties
+    # ==========================================================
+
+    @property
+    def should_close(self) -> bool:
+        """
+        True once the user has requested the display close.
+        """
+        return self._should_close
+
+
+    @property
+    def frames_displayed(self) -> int:
+        """
+        Number of synchronized frame pairs displayed.
+        """
+        return self._frames_displayed
 
 
     def show(self, pair: SyncPair):
@@ -92,14 +119,30 @@ class Display:
         )
 
 
-        cv2.setWindowTitle("Stereo", title)
-        cv2.imshow("Stereo", combined)
+        cv2.setWindowTitle(self.window_name, title)
+        cv2.imshow(
+            self.window_name,
+            combined,
+        )
 
+        key = cv2.waitKey(1)
 
-        return cv2.waitKey(1)
+        if key in (
+            27,
+            ord("q"),
+            ord("Q"),
+        ):
+            self._should_close = True
 
+        self._frames_displayed += 1
 
 
     def close(self):
 
-        cv2.destroyAllWindows()
+        self._should_close = True
+
+        cv2.destroyWindow(
+            self.window_name
+        )
+
+        cv2.waitKey(1)

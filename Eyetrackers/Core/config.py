@@ -66,7 +66,7 @@ CSV_FILE = CSV_DIR / "test.csv"
 
 LEFT_STREAM = "http://140.228.2.93:81/stream"
 
-RIGHT_STREAM = "http://140.228.2.11:81/stream"
+RIGHT_STREAM = "http://140.228.2.118:81/stream"
 
 # ==========================================================
 # Enable Debug Messages
@@ -182,6 +182,8 @@ CSV_HEADER = [
 # ==========================================================
 # Camera Factory
 # ==========================================================
+
+WINDOW_STEREO = "Stereo"
 
 LEFT_CAMERA = CameraConfig(
 

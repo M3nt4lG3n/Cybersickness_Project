@@ -182,6 +182,8 @@ class SyncPair:
     sync_timestamp_ms: int
     delta_ms: int
 
+    status: str = "SYNCED"
+
     @property
     def capture_delta_ms(self) -> Optional[int]:
         if self.dropped:
@@ -201,6 +203,31 @@ class SyncPair:
             self.left.receive_ms -
             self.right.receive_ms
         )
+    
+    # --------------------------------------------------
+    # Status
+    # --------------------------------------------------
+
+    @property
+    def dropped(self) -> bool:
+        """
+        Return True if this synchronization pair represents
+        a dropped or incomplete frame pair.
+
+        A pair is considered dropped if either camera frame
+        is missing or the synchronization status indicates
+        anything other than a successful match.
+        """
+
+        if self.left is None:
+            return True
+
+        if self.right is None:
+            return True
+
+        status = getattr(self, "status", "SYNCED")
+
+        return status != "SYNCED"
 
 
 # ==========================================================

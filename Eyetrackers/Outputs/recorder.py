@@ -29,6 +29,11 @@ class Recorder:
             (frame_size)
         )
 
+        if not self.left_writer.isOpened():
+            raise RuntimeError(
+                f"Unable to open video writer: {left_filename}"
+            )
+
 
         self.right_writer = cv2.VideoWriter(
             right_filename,
@@ -36,6 +41,11 @@ class Recorder:
             fps,
             (frame_size)
         )
+
+        if not self.right_writer.isOpened():
+            raise RuntimeError(
+                f"Unable to open video writer: {right_filename}"
+            )
 
 
         self.frames = 0
@@ -60,3 +70,15 @@ class Recorder:
     def close(self) -> None:
         self.left_writer.release()
         self.right_writer.release()
+
+    @property
+    def alive(self) -> bool:
+        return self.thread.is_alive()
+
+
+    @property
+    def queue_size(self) -> int:
+        if self.mode == BufferMode.FIFO:
+            return self.queue.qsize()
+
+        return 0
