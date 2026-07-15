@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import threading
 
 from Eyetrackers.Core import config
 from Eyetrackers.Core.tracker_types import SyncPair
@@ -19,6 +20,13 @@ class Display:
         #
         self._should_close = False
         self._frames_displayed = 0
+
+        #
+        # Latest rendered frame from the worker.
+        #
+        self._frame_lock = threading.Lock()
+        self._latest_frame = None
+        self._latest_title = self.window_name
 
     # ==========================================================
     # Properties
@@ -40,7 +48,7 @@ class Display:
         return self._frames_displayed
 
 
-    def show(self, pair: SyncPair):
+    def render(self, pair: SyncPair) -> None:
         left = pair.left.image
         right = pair.right.image
 
@@ -119,10 +127,32 @@ class Display:
         )
 
 
-        cv2.setWindowTitle(self.window_name, title)
+        with self._frame_lock:
+            self._latest_frame = combined
+            self._latest_title = title
+
+    def present(self) -> None:
+        """
+        Present the newest rendered frame.
+
+        Must be called from the main thread.
+        """
+
+        with self._frame_lock:
+            frame = self._latest_frame
+            title = self._latest_title
+
+        if frame is None:
+            return
+
+        cv2.setWindowTitle(
+            self.window_name,
+            title,
+        )
+
         cv2.imshow(
             self.window_name,
-            combined,
+            frame,
         )
 
         key = cv2.waitKey(1)
@@ -133,8 +163,6 @@ class Display:
             ord("Q"),
         ):
             self._should_close = True
-
-        self._frames_displayed += 1
 
 
     def close(self):

@@ -105,7 +105,7 @@ def create_components() -> Application:
     display = Display()
 
     display_worker = OutputWorker(
-        callback=display.show,
+        callback=display.render,
         mode=BufferMode.LATEST,
         name="DisplayWorker",
     )
@@ -153,6 +153,8 @@ def start(app: Application) -> None:
     print("Starting cameras...")
 
     app.display_worker.start()
+    app.recorder_worker.start()
+    app.csv_worker.start()
 
     app.left_camera.start()
     app.right_camera.start()
@@ -194,6 +196,21 @@ def shutdown(app: Application) -> None:
         pass
 
     try:
+        app.display_worker.stop()
+    except Exception:
+        pass
+
+    try:
+        app.recorder_worker.stop()
+    except Exception:
+        pass 
+
+    try:
+        app.csv_worker.stop()
+    except Exception:
+        pass 
+
+    try:
         app.recorder.close()
     except Exception:
         pass
@@ -207,11 +224,6 @@ def shutdown(app: Application) -> None:
         app.display.close()
     except Exception:
         pass
-
-    try:
-        app.display_worker.stop()
-    except Exception:
-        pass 
 
     print(
         f"Recording complete.\n"
@@ -236,36 +248,30 @@ def run(app: Application) -> None:
 
     while True:
 
+        if app.display.should_close:
+            break
+        
         t0 = time.perf_counter()
 
         pair = app.synchronizer.get_pair()
-
-        t1 = time.perf_counter()
 
         if pair is None:
             time.sleep(0.001)
             continue
 
-        #
-        # Save original recordings.
-        #
-        app.recorder.write(pair)
+        t1 = time.perf_counter()
+
+        app.recorder_worker.submit(pair)
 
         t2 = time.perf_counter()
 
-        #
-        # Save synchronization metadata.
-        #
-        app.csvlogger.write(pair)
-
+        app.csv_worker.submit(pair)
+        
         t3 = time.perf_counter()
 
-        #
-        # Display diagnostic overlay.
-        #
-        app.recorder_worker.submit(pair)
-        app.csv_worker.submit(pair)
         app.display_worker.submit(pair)
+
+        app.display.present()
 
         t4 = time.perf_counter()
 
@@ -278,15 +284,23 @@ def run(app: Application) -> None:
             )
 
             print(
-                f"Display  "
-                f"processed={app.display_worker.processed} "
-                f"dropped={app.display_worker.dropped}"
+                f"Recorder processed={app.recorder_worker.processed} "
+                f"dropped={app.recorder_worker.dropped}"
             )
 
-            last_status = time.time()
+            print(
+                f"CSV processed={app.csv_worker.processed} "
+                f"dropped={app.csv_worker.dropped}"
+            )
 
-        if app.display.should_close:
-            break
+            print(
+                f"Display processed={app.display_worker.processed} "
+                f"dropped={app.display_worker.dropped}"
+            ) 
+
+            
+
+            last_status = time.time()
 
 
 # ==========================================================
