@@ -18,6 +18,9 @@ class SyncStatistics:
     failed_matches: int = 0
     average_delta_ms: float = 0.0
 
+    left_discards: int = 0
+    right_discards: int = 0
+
 
 
 class StereoSynchronizer:
@@ -72,10 +75,42 @@ class StereoSynchronizer:
 
         left = self.left_camera.oldest_frame()
 
+        oldest_right = self.right_camera.oldest_frame()
+
+
         if left is None:
             return None
+        
+        if oldest_right is not None:
+
+            stale = (
+                left.capture_ms
+                - oldest_right.capture_ms
+            )
+
+            print(
+                f"Right oldest is {stale} ms behind left"
+            )
+
+        right_oldest = self.right_camera.oldest_frame()
+        
+        if right_oldest is not None:
+
+            print(
+                f"Oldest delta: "
+                f"{left.capture_ms - right_oldest.capture_ms}"
+            )
 
         left_time = left.capture_ms
+
+        removed = self.right_camera.remove_before(
+            left.capture_ms - self.tolerance_ms
+        )
+
+        if removed:
+            print(
+                f"Pruned {removed} stale right frames"
+            )
 
 
         right = self.right_camera.consume_closest(
@@ -90,22 +125,40 @@ class StereoSynchronizer:
 
             self.left_camera.pop_oldest()
 
+            self.stats.left_discards += 1
+
             return None
-
-
 
         delta = abs(
             left.capture_ms -
             right.capture_ms
         )
 
-
-
         self.left_camera.pop_oldest()
 
+        self.stats.left_discards += 1
+
+        obsolete = 0
+
+        while True:
+            oldest = self.right_camera.oldest_frame()
+
+            if oldest is None:
+                break
+
+            if oldest.capture_ms < left.capture_ms - self.tolerance_ms:
+                obsolete += 1
+                break
+
+            break
+
+        if oldest is not None:
+            print(
+                f"obsolete count={obsolete} "
+                f"oldest_delta={left.capture_ms - oldest.capture_ms}"
+            )
+
         self._record_success(delta)
-
-
 
         return SyncPair(
             left=left,

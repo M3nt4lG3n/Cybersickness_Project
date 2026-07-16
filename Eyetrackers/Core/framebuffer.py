@@ -19,6 +19,7 @@ class FrameBuffer:
 
         self.frames: deque[FramePacket] = deque(maxlen=max_size)
         self.lock = threading.Lock()
+        self.max_match_index = 0
 
 
     def add(self, frame: FramePacket) -> None:
@@ -97,9 +98,35 @@ class FrameBuffer:
             if abs(best.capture_ms - timestamp_ms) > tolerance_ms:
                 return None
 
-            del self.frames[best_index]
+            print(
+                f"Matched index {best_index}"
+            )
+
+            self.max_match_index = max(
+                self.max_match_index,
+                best_index,
+            )
+
+            if best_index > 0:
+
+                stale = best.capture_ms - self.frames[0].capture_ms
+
+                print(
+                    f"Match index={best_index} "
+                    f"stale span={stale} ms"
+                )
+
+            best = self.frames[best_index]
+
+            #
+            # Remove every frame older than the matched frame.
+            #
+            for _ in range(best_index + 1):
+                self.frames.popleft()
 
             return best
+
+            
 
 
     def clear(self) -> None:
@@ -116,3 +143,39 @@ class FrameBuffer:
     def snapshot(self) -> list[FramePacket]:
         with self.lock:
             return list(self.frames)
+        
+    @property
+    def capacity(self) -> int:
+        return self.frames.maxlen
+    
+    def age_span_ms(self):
+
+        with self.lock:
+
+            if len(self.frames) < 2:
+                return 0
+
+            return (
+                self.frames[-1].capture_ms
+                -
+                self.frames[0].capture_ms
+            )
+        
+    def remove_before(
+        self,
+        timestamp_ms: int,
+    ) -> int:
+
+        removed = 0
+
+        with self.lock:
+
+            while (
+                self.frames
+                and
+                self.frames[0].capture_ms < timestamp_ms
+            ):
+                self.frames.popleft()
+                removed += 1
+
+        return removed

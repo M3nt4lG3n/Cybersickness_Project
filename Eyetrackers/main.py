@@ -259,23 +259,35 @@ def run(app: Application) -> None:
             time.sleep(0.001)
             continue
 
-        t1 = time.perf_counter()
-
         app.recorder_worker.submit(pair)
 
-        t2 = time.perf_counter()
-
         app.csv_worker.submit(pair)
-        
-        t3 = time.perf_counter()
 
         app.display_worker.submit(pair)
 
         app.display.present()
 
-        t4 = time.perf_counter()
+        print(
+            f"Left buffer : "
+            f"{app.left_camera.buffer.size()}/"
+            f"{app.left_camera.buffer.capacity}"
+        )
 
-        print(f"syncronizer: {t1-t0:.3f}s, recorder: {t2-t1:.3f}s, csvlogger: {t3-t2:.3f}s, display: {t4-t3:.3f}s")
+        print(
+            f"Right buffer: "
+            f"{app.right_camera.buffer.size()}/"
+            f"{app.right_camera.buffer.capacity}"
+        )
+
+        print(
+            f"Right span: "
+            f"{app.right_camera.buffer.age_span_ms()} ms"
+        )
+
+        print(
+            f"Largest match index: "
+            f"{app.right_camera.buffer.max_match_index}"
+        )
 
         if time.time() - last_status >= 5:
 
