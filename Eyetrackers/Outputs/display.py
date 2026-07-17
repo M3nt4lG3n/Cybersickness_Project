@@ -2,8 +2,7 @@ import cv2
 import numpy as np
 import threading
 
-from Eyetrackers.Core import config
-from Eyetrackers.Core.tracker_types import SyncPair
+from Eyetrackers.Core.tracker_types import FramePacket
 class Display:
 
     def __init__(self):
@@ -25,8 +24,11 @@ class Display:
         # Latest rendered frame from the worker.
         #
         self._frame_lock = threading.Lock()
-        self._latest_frame = None
-        self._latest_title = self.window_name
+        self._left_frame = None
+        self._right_frame = None
+
+        self._left_metadata = None
+        self._right_metadata = None
 
     # ==========================================================
     # Properties
@@ -48,88 +50,25 @@ class Display:
         return self._frames_displayed
 
 
-    def render(self, pair: SyncPair) -> None:
-        left = pair.left.image
-        right = pair.right.image
-
-        left_text = (
-            f"L Frame:{pair.left.frame_number} "
-            f"Time:{pair.left.capture_ms}"
-        )
-
-        right_text = (
-            f"R Frame:{pair.right.frame_number} "
-            f"Time:{pair.right.capture_ms}"
-        )
-
-        delta_text = (
-            f"Δ {pair.delta_ms:.1f} ms"
-        )
-
-        latency_text = (
-            f"Lag L:{pair.left.latency_ms} "
-            f"R:{pair.right.latency_ms}"
-        )
-
-        title = (
-            f"Stereo View | Δ={pair.delta_ms:.1f} ms"
-        )
-
-
-        combined = cv2.hconcat(
-            [
-                left,
-                right
-            ]
-        )
-
-        combined = combined.copy()
-
-
-        cv2.putText(
-            combined,
-            left_text,
-            (20, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
-        )
-
-        cv2.putText(
-            combined,
-            right_text,
-            (left.shape[1] + 20, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
-        )
-
-        cv2.putText(
-            combined,
-            delta_text,
-            (20, 60),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 255),
-            2,
-        )
-
-        cv2.putText(
-            combined,
-            latency_text,
-            (20, 90),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 0),
-            2,
-        )
-
+    def render_left(self, frame: FramePacket) -> None:
 
         with self._frame_lock:
-            self._latest_frame = combined
-            self._latest_title = title
+            self._left_frame = frame.image.copy()
+            self._left_metadata = frame
+
+            self._left_frame = frame.image.copy()
+            self._left_metadata = frame
+
+
+
+    def render_right(self, frame: FramePacket) -> None:
+
+        with self._frame_lock:
+            self._right_frame = frame.image.copy()
+            self._right_metadata = frame
+
+            self._right_frame = frame.image.copy()
+            self._right_metadata = frame
 
     def present(self) -> None:
         """
@@ -139,21 +78,39 @@ class Display:
         """
 
         with self._frame_lock:
-            frame = self._latest_frame
-            title = self._latest_title
+            left = None if self._left_frame is None else self._left_frame.copy()
+            right = None if self._right_frame is None else self._right_frame.copy()
 
-        if frame is None:
+            left_meta = self._left_metadata
+            right_meta = self._right_metadata
+
+        if left is None and right is None:
             return
+
+        if left is None:
+            left = np.zeros_like(right)
+
+        if right is None:
+            right = np.zeros_like(left)
+
+        combined = cv2.hconcat(
+            [
+                left,
+                right,
+            ]
+        )
 
         cv2.setWindowTitle(
             self.window_name,
-            title,
+            "Eyetrackers",
         )
 
         cv2.imshow(
             self.window_name,
-            frame,
+            combined,
         )
+
+        self._frames_displayed += 1
 
         key = cv2.waitKey(1)
 

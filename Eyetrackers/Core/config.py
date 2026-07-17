@@ -160,22 +160,10 @@ CSV_HEADER = [
 
     "SyncTickMs",
 
-    "LeftFrame",
-    "LeftCaptureMs",
-    "LeftReceiveMs",
-
-    "RightFrame",
-    "RightCaptureMs",
-    "RightReceiveMs",
-
-    "CaptureDeltaMs",
-    "ReceiveDeltaMs",
-
-    "LeftLatencyMs",
-    "RightLatencyMs",
-
-    "Status"
-
+    "FrameNumber",
+    "CaptureTimestampMs",
+    "ReceiveTimestampMs",
+    "LatencyMs"
 ]
 
 

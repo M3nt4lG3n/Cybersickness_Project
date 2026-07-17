@@ -8,7 +8,6 @@ from pathlib import Path
 import Eyetrackers.Core.config as config
 
 from Eyetrackers.Core.camera import Camera
-from Eyetrackers.Core.sync import StereoSynchronizer
 from Eyetrackers.Core.tracker_types import CameraConfig
 from Eyetrackers.Core.output_worker import OutputWorker, BufferMode
 
@@ -29,15 +28,22 @@ class Application:
     left_camera: Camera
     right_camera: Camera
 
-    synchronizer: StereoSynchronizer
+    left_recorder: Recorder
+    right_recorder: Recorder
 
-    recorder: Recorder
-    csvlogger: CSVLogger
+    left_csvlogger: CSVLogger
+    right_csvlogger: CSVLogger
+
     display: Display
 
-    display_worker: OutputWorker
-    recorder_worker: OutputWorker
-    csv_worker: OutputWorker
+    left_display_worker: OutputWorker
+    right_display_worker: OutputWorker
+
+    left_recorder_worker: OutputWorker
+    right_recorder_worker: OutputWorker
+
+    left_csv_worker: OutputWorker
+    right_csv_worker: OutputWorker
 
 
 # ==========================================================
@@ -80,45 +86,68 @@ def create_components() -> Application:
     left_camera = Camera(config.LEFT_CAMERA)
     right_camera = Camera(config.RIGHT_CAMERA)
 
-    synchronizer = StereoSynchronizer(
-        left_camera=left_camera,
-        right_camera=right_camera,
-        tolerance_ms=config.SYNC_TOLERANCE_MS,
-    )
-
     frame_size = (
         config.VIDEO_WIDTH,
         config.VIDEO_HEIGHT,
     )
 
-    recorder = Recorder(
-        left_filename=str(left_video),
-        right_filename=str(right_video),
+    left_recorder = Recorder(
+        filename=str(left_video),
         fps=config.OUTPUT_FPS,
         frame_size=frame_size,
     )
 
-    csvlogger = CSVLogger(
-        str(csv_file)
+    right_recorder = Recorder(
+        filename=str(right_video),
+        fps=config.OUTPUT_FPS,
+        frame_size=frame_size,
+    )
+
+    left_csvlogger = CSVLogger(
+        str(patient_directory / "left_eye.csv")
+    )
+
+    right_csvlogger = CSVLogger(
+        str(patient_directory / "right_eye.csv")
     )
 
     display = Display()
 
-    display_worker = OutputWorker(
-        callback=display.render,
+    left_display_worker = OutputWorker(
+        callback=display.render_left,
         mode=BufferMode.LATEST,
         name="DisplayWorker",
     )
 
-    recorder_worker = OutputWorker(
-        callback=recorder.write,
+    right_display_worker = OutputWorker(
+        callback=display.render_right,
+        mode=BufferMode.LATEST,
+        name="DisplayWorker",
+    )
+
+    left_recorder_worker = OutputWorker(
+        callback=left_recorder.write,
         mode=BufferMode.FIFO,
         queue_size=120,
         name="RecorderWorker",
     )
 
-    csv_worker = OutputWorker(
-        callback=csvlogger.write,
+    right_recorder_worker = OutputWorker(
+        callback=right_recorder.write,
+        mode=BufferMode.FIFO,
+        queue_size=120,
+        name="RecorderWorker",
+    )
+
+    left_csv_worker = OutputWorker(
+        callback=left_csvlogger.write,
+        mode=BufferMode.FIFO,
+        queue_size=120,
+        name="CSVWorker",
+    )
+
+    right_csv_worker = OutputWorker(
+        callback=right_csvlogger.write,
         mode=BufferMode.FIFO,
         queue_size=120,
         name="CSVWorker",
@@ -130,13 +159,17 @@ def create_components() -> Application:
         patient_directory=patient_directory,
         left_camera=left_camera,
         right_camera=right_camera,
-        synchronizer=synchronizer,
-        recorder=recorder,
-        csvlogger=csvlogger,
+        left_recorder=left_recorder,
+        right_recorder=right_recorder,
+        left_csvlogger=left_csvlogger,
+        right_csvlogger=right_csvlogger,
         display=display,
-        display_worker=display_worker,
-        recorder_worker=recorder_worker,
-        csv_worker=csv_worker,
+        left_display_worker=left_display_worker,
+        right_display_worker=right_display_worker,
+        left_recorder_worker=left_recorder_worker,
+        right_recorder_worker=right_recorder_worker,
+        left_csv_worker=left_csv_worker,
+        right_csv_worker=right_csv_worker,
     )
 
 
@@ -152,9 +185,13 @@ def start(app: Application) -> None:
 
     print("Starting cameras...")
 
-    app.display_worker.start()
-    app.recorder_worker.start()
-    app.csv_worker.start()
+    app.left_display_worker.start()
+    app.right_display_worker.start()
+    app.left_recorder_worker.start()
+    app.right_recorder_worker.start()
+
+    app.left_csv_worker.start()
+    app.right_csv_worker.start()
 
     app.left_camera.start()
     app.right_camera.start()
@@ -196,27 +233,52 @@ def shutdown(app: Application) -> None:
         pass
 
     try:
-        app.display_worker.stop()
+        app.left_display_worker.stop()
     except Exception:
         pass
 
     try:
-        app.recorder_worker.stop()
-    except Exception:
-        pass 
-
-    try:
-        app.csv_worker.stop()
-    except Exception:
-        pass 
-
-    try:
-        app.recorder.close()
+        app.right_display_worker.stop()
     except Exception:
         pass
 
     try:
-        app.csvlogger.close()
+        app.left_recorder_worker.stop()
+    except Exception:
+        pass 
+
+    try:
+        app.right_recorder_worker.stop()
+    except Exception:
+        pass 
+
+    try:
+        app.left_csv_worker.stop()
+    except Exception:
+        pass 
+
+    try:
+        app.right_csv_worker.stop()
+    except Exception:
+        pass 
+
+    try:
+        app.left_recorder.close()
+    except Exception:
+        pass
+
+    try:
+        app.right_recorder.close()
+    except Exception:
+        pass
+
+    try:
+        app.left_csvlogger.close()
+    except Exception:
+        pass
+
+    try:
+        app.right_csvlogger.close()
     except Exception:
         pass
 
@@ -250,44 +312,26 @@ def run(app: Application) -> None:
 
         if app.display.should_close:
             break
-        
-        t0 = time.perf_counter()
 
-        pair = app.synchronizer.get_pair()
+        left = app.left_camera.consume_oldest()
 
-        if pair is None:
-            time.sleep(0.001)
-            continue
+        if left is not None:
 
-        app.recorder_worker.submit(pair)
+            app.left_recorder_worker.submit(left)
 
-        app.csv_worker.submit(pair)
+            app.left_csv_worker.submit(left)
 
-        app.display_worker.submit(pair)
+            app.left_display_worker.submit(left)
 
-        app.display.present()
+        right = app.right_camera.consume_oldest()
 
-        print(
-            f"Left buffer : "
-            f"{app.left_camera.buffer.size()}/"
-            f"{app.left_camera.buffer.capacity}"
-        )
+        if right is not None:
 
-        print(
-            f"Right buffer: "
-            f"{app.right_camera.buffer.size()}/"
-            f"{app.right_camera.buffer.capacity}"
-        )
+            app.right_recorder_worker.submit(right)
 
-        print(
-            f"Right span: "
-            f"{app.right_camera.buffer.age_span_ms()} ms"
-        )
+            app.right_csv_worker.submit(right)
 
-        print(
-            f"Largest match index: "
-            f"{app.right_camera.buffer.max_match_index}"
-        )
+            app.right_display_worker.submit(right)
 
         if time.time() - last_status >= 5:
 
@@ -296,23 +340,38 @@ def run(app: Application) -> None:
             )
 
             print(
-                f"Recorder processed={app.recorder_worker.processed} "
-                f"dropped={app.recorder_worker.dropped}"
+                f"Left Recorder processed={app.left_recorder_worker.processed} "
+                f"dropped={app.left_recorder_worker.dropped}"
             )
 
             print(
-                f"CSV processed={app.csv_worker.processed} "
-                f"dropped={app.csv_worker.dropped}"
-            )
-
-            print(
-                f"Display processed={app.display_worker.processed} "
-                f"dropped={app.display_worker.dropped}"
+                f"Right Display processed={app.right_display_worker.processed} "
+                f"dropped={app.right_display_worker.dropped}"
             ) 
 
-            
+            print(
+                f"Left CSV processed={app.left_csv_worker.processed} "
+                f"dropped={app.left_csv_worker.dropped}"
+            )
+
+            print(
+                f"Right CSV processed={app.right_csv_worker.processed} "
+                f"dropped={app.right_csv_worker.dropped}"
+            )
+
+            print(
+                f"Left Display processed={app.left_display_worker.processed} "
+                f"dropped={app.left_display_worker.dropped}"
+            )
+
+            print(
+                f"Right Display processed={app.right_display_worker.processed} "
+                f"dropped={app.right_display_worker.dropped}"
+            )
 
             last_status = time.time()
+
+        app.display.present()
 
 
 # ==========================================================

@@ -4,9 +4,7 @@ import queue
 import threading
 import traceback
 from enum import Enum, auto
-from typing import Callable, Optional
-
-from Eyetrackers.Core.tracker_types import SyncPair
+from typing import Any, Callable, Optional
 
 
 # ==========================================================
@@ -15,7 +13,7 @@ from Eyetrackers.Core.tracker_types import SyncPair
 
 class BufferMode(Enum):
     """
-    Determines how the worker buffers SyncPairs.
+    Determines how the worker buffers items.
     """
 
     FIFO = auto()
@@ -30,22 +28,22 @@ class OutputWorker:
     """
     Runs an output module on its own thread.
 
-    The worker accepts SyncPairs from the main acquisition
+    The worker accepts items from the main acquisition
     loop and forwards them to the supplied callback.
 
     Supported modes:
 
         FIFO
-            Every SyncPair is processed.
+            Every item is processed.
 
         LATEST
-            Only the newest SyncPair is kept.
+            Only the newest item is kept.
             Older frames are discarded automatically.
     """
 
     def __init__(
         self,
-        callback: Callable[[SyncPair], None],
+        callback: Callable[[Any], None],
         *,
         mode: BufferMode = BufferMode.FIFO,
         queue_size: int = 60,
@@ -66,14 +64,14 @@ class OutputWorker:
         #
         # FIFO mode
         #
-        self.queue: queue.Queue[Optional[SyncPair]] = queue.Queue(
+        self.queue: queue.Queue[Optional[Any]] = queue.Queue(
             maxsize=queue_size
         )
 
         #
         # Latest mode
         #
-        self._latest_pair: Optional[SyncPair] = None
+        self._latest_item: Optional[Any] = None
         self._latest_lock = threading.Lock()
         self._latest_event = threading.Event()
 
@@ -133,7 +131,7 @@ class OutputWorker:
 
     def submit(
         self,
-        pair: SyncPair,
+        item: Any,
     ) -> None:
         """
         Submit a synchronized frame pair for processing.
@@ -151,7 +149,7 @@ class OutputWorker:
             #
             # Block if necessary.
             #
-            self.queue.put(pair)
+            self.queue.put(item)
 
             return
 
@@ -163,10 +161,10 @@ class OutputWorker:
             # If another frame hasn't been displayed yet,
             # it is intentionally discarded.
             #
-            if self._latest_pair is not None:
+            if self._latest_item is not None:
                 self._dropped += 1
 
-            self._latest_pair = pair
+            self._latest_item = item
 
         self._latest_event.set()
 
@@ -187,21 +185,21 @@ class OutputWorker:
 
     def _run_fifo(self) -> None:
         """
-        Process every submitted SyncPair in order.
+        Process every submitted item in order.
         """
 
         while True:
 
-            pair = self.queue.get()
+            item = self.queue.get()
 
             #
             # Sentinel used during shutdown.
             #
-            if pair is None:
+            if item is None:
                 break
 
             try:
-                self.callback(pair)
+                self.callback(item)
                 self._processed += 1
             except Exception:
 
@@ -214,7 +212,7 @@ class OutputWorker:
 
     def _run_latest(self) -> None:
         """
-        Continuously process only the newest SyncPair.
+        Continuously process only the newest item.
         Older pairs are automatically discarded.
         """
 
@@ -231,14 +229,14 @@ class OutputWorker:
                 break
 
             with self._latest_lock:
-                pair = self._latest_pair
-                self._latest_pair = None
+                item = self._latest_item
+                self._latest_item = None
 
-            if pair is None:
+            if item is None:
                 continue
 
             try:
-                self.callback(pair)
+                self.callback(item)
                 self._processed += 1
             except Exception as exc:
                 print(
@@ -248,26 +246,26 @@ class OutputWorker:
     
     @property
     def submitted(self) -> int:
-        """Total SyncPairs submitted."""
+        """Total items submitted."""
         return self._submitted
 
 
     @property
     def processed(self) -> int:
-        """Total SyncPairs processed."""
+        """Total items processed."""
         return self._processed
 
 
     @property
     def dropped(self) -> int:
-        """Total SyncPairs discarded."""
+        """Total items discarded."""
         return self._dropped
 
 
     @property
     def backlog(self) -> int:
         """
-        Number of SyncPairs waiting to be processed.
+        Number of items waiting to be processed.
         """
 
         if self.mode == BufferMode.FIFO:

@@ -2,54 +2,81 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import csv
-import numpy as np
-import argparse
 
+import argparse
+import csv
 import cv2
+import numpy as np
+
+
+# ==========================================================
+# Filenames
+# ==========================================================
 
 LEFT_VIDEO = "left_eye.mp4"
 RIGHT_VIDEO = "right_eye.mp4"
-SYNC_CSV = "eyetracker.csv"
+
+LEFT_CSV = "left_eye.csv"
+RIGHT_CSV = "right_eye.csv"
+
+
+# ==========================================================
+# Playback Metadata
+# ==========================================================
 
 @dataclass(slots=True)
-class PlaybackRow:
+class PlaybackFrame:
     """
-    One synchronized frame pair from the CSV log.
+    Metadata describing one recorded frame.
     """
 
-    left_frame: int
-    right_frame: int
+    frame_number: int
 
-    timestamp_ms: int
+    capture_timestamp_ms: int
 
-    delta_ms: float
+    receive_timestamp_ms: int
 
-    status: str
+
+# ==========================================================
+# Playback Session
+# ==========================================================
 
 @dataclass(slots=True)
 class PlaybackSession:
-    """
-    Resources required for synchronized playback.
-    """
 
     patient_directory: Path
 
     left_capture: cv2.VideoCapture
     right_capture: cv2.VideoCapture
 
-    rows: list[PlaybackRow]
+    left_rows: list[PlaybackFrame]
+    right_rows: list[PlaybackFrame]
 
-    current_index: int = 0
-    frames_presented: int = 0
+    left_index: int = 0
+    right_index: int = 0
+
+    left_image: np.ndarray | None = None
+    right_image: np.ndarray | None = None
+
+    left_metadata: PlaybackFrame | None = None
+    right_metadata: PlaybackFrame | None = None
+
+    playback_clock_ms: int = 0
+
+    previous_capture_time: int | None = None
 
     paused: bool = False
 
     playback_speed: float = 1.0
 
-    previous_timestamp_ms: int | None = None
-
     show_overlay: bool = True
+
+    frames_presented: int = 0
+
+
+# ==========================================================
+# Drawing Helpers
+# ==========================================================
 
 def draw_text(
     image,
@@ -58,9 +85,6 @@ def draw_text(
     y: int,
     color=(255, 255, 255),
 ) -> None:
-    """
-    Draw consistently formatted overlay text.
-    """
 
     cv2.putText(
         image,
@@ -73,21 +97,249 @@ def draw_text(
         cv2.LINE_AA,
     )
 
-def draw_overlay(
+
+# ==========================================================
+# CSV Loading
+# ==========================================================
+
+def load_csv(
+    csv_path: Path,
+) -> list[PlaybackFrame]:
+    """
+    Load a per-camera recording CSV.
+    """
+
+    rows: list[PlaybackFrame] = []
+
+    with csv_path.open(
+        "r",
+        newline="",
+        encoding="utf-8",
+    ) as f:
+
+        reader = csv.DictReader(f)
+
+        required = (
+            "FrameNumber",
+            "CaptureTimestampMs",
+            "ReceiveTimestampMs",
+        )
+
+        missing = [
+            c
+            for c in required
+            if c not in reader.fieldnames
+        ]
+
+        if missing:
+            raise ValueError(
+                f"{csv_path.name} missing columns: {missing}"
+            )
+
+        for row in reader:
+
+            rows.append(
+
+                PlaybackFrame(
+
+                    frame_number=int(
+                        row["FrameNumber"]
+                    ),
+
+                    capture_timestamp_ms=int(
+                        row["CaptureTimestampMs"]
+                    ),
+
+                    receive_timestamp_ms=int(
+                        row["ReceiveTimestampMs"]
+                    ),
+                )
+
+            )
+
+    return rows
+
+
+# ==========================================================
+# Session Loading
+# ==========================================================
+
+def load_session(
+    patient_directory: Path,
+) -> PlaybackSession:
+
+    patient_directory = Path(
+        patient_directory
+    )
+
+    if not patient_directory.exists():
+        raise FileNotFoundError(
+            patient_directory
+        )
+
+    left_video = patient_directory / LEFT_VIDEO
+    right_video = patient_directory / RIGHT_VIDEO
+
+    left_csv = patient_directory / LEFT_CSV
+    right_csv = patient_directory / RIGHT_CSV
+
+    required_files = (
+
+        left_video,
+        right_video,
+
+        left_csv,
+        right_csv,
+
+    )
+
+    for path in required_files:
+
+        if not path.exists():
+
+            raise FileNotFoundError(
+                path
+            )
+
+    left_capture = cv2.VideoCapture(
+        str(left_video)
+    )
+
+    right_capture = cv2.VideoCapture(
+        str(right_video)
+    )
+
+    if not left_capture.isOpened():
+
+        raise RuntimeError(
+            f"Unable to open {left_video}"
+        )
+
+    if not right_capture.isOpened():
+
+        raise RuntimeError(
+            f"Unable to open {right_video}"
+        )
+
+    left_rows = load_csv(
+        left_csv
+    )
+
+    right_rows = load_csv(
+        right_csv
+    )
+
+    print("\nPlayback Session")
+
+    print(
+        f"Left frames : "
+        f"{len(left_rows)}"
+    )
+
+    print(
+        f"Right frames: "
+        f"{len(right_rows)}"
+    )
+
+    print(
+        f"Left video : "
+        f"{int(left_capture.get(cv2.CAP_PROP_FRAME_COUNT))}"
+    )
+
+    print(
+        f"Right video: "
+        f"{int(right_capture.get(cv2.CAP_PROP_FRAME_COUNT))}"
+    )
+
+    return PlaybackSession(
+
+        patient_directory=patient_directory,
+
+        left_capture=left_capture,
+        right_capture=right_capture,
+
+        left_rows=left_rows,
+        right_rows=right_rows,
+
+    )
+
+# ==========================================================
+# Frame Advancement
+# ==========================================================
+
+def advance_left(
     session: PlaybackSession,
-    row: PlaybackRow,
-    image,
 ) -> None:
     """
-    Draw the playback diagnostic HUD.
+    Advance the left video until its capture timestamp
+    exceeds the playback clock.
     """
+
+    while session.left_index < len(session.left_rows):
+
+        row = session.left_rows[session.left_index]
+
+        if (
+            row.capture_timestamp_ms
+            > session.playback_clock_ms
+        ):
+            break
+
+        success, image = session.left_capture.read()
+
+        if not success:
+            break
+
+        session.left_image = image
+        session.left_metadata = row
+
+        session.left_index += 1
+
+
+def advance_right(
+    session: PlaybackSession,
+) -> None:
+    """
+    Advance the right video until its capture timestamp
+    exceeds the playback clock.
+    """
+
+    while session.right_index < len(session.right_rows):
+
+        row = session.right_rows[session.right_index]
+
+        if (
+            row.capture_timestamp_ms
+            > session.playback_clock_ms
+        ):
+            break
+
+        success, image = session.right_capture.read()
+
+        if not success:
+            break
+
+        session.right_image = image
+        session.right_metadata = row
+
+        session.right_index += 1
+
+
+# ==========================================================
+# Overlay
+# ==========================================================
+
+def draw_overlay(
+    session: PlaybackSession,
+    image: np.ndarray,
+) -> None:
 
     y = 20
     step = 18
 
     draw_text(
         image,
-        "Playback",
+        f"Playback Clock : {session.playback_clock_ms} ms",
         10,
         y,
     )
@@ -96,12 +348,7 @@ def draw_overlay(
 
     draw_text(
         image,
-        (
-            f"Frame: "
-            f"{session.current_index}"
-            f"/"
-            f"{len(session.rows)}"
-        ),
+        f"Speed : {session.playback_speed:.2f}x",
         10,
         y,
     )
@@ -110,80 +357,121 @@ def draw_overlay(
 
     draw_text(
         image,
-        (
-            f"Timestamp: "
-            f"{row.timestamp_ms} ms"
-        ),
+        f"Presented : {session.frames_presented}",
         10,
         y,
-    )
-
-    y += step
-
-    draw_text(
-        image,
-        (
-            f"Capture Δ: "
-            f"{row.delta_ms:.1f} ms"
-        ),
-        10,
-        y,
-    )
-
-    y += step
-
-    status_color = (
-        (0, 255, 0)
-        if row.status == "SYNCED"
-        else (0, 0, 255)
-    )
-
-    draw_text(
-        image,
-        (
-            f"Status: "
-            f"{row.status}"
-        ),
-        10,
-        y,
-        status_color,
     )
 
     #
-    # Right side
+    # Left camera
     #
 
-    x = image.shape[1] - 180
+    if session.left_metadata is not None:
 
-    draw_text(
-        image,
-        (
-            f"Speed: "
-            f"{session.playback_speed:.2f}x"
-        ),
-        x,
-        20,
-    )
+        y += step * 2
+
+        draw_text(
+            image,
+            "LEFT",
+            10,
+            y,
+            (0, 255, 0),
+        )
+
+        y += step
+
+        draw_text(
+            image,
+            f"Frame : {session.left_metadata.frame_number}",
+            10,
+            y,
+        )
+
+        y += step
+
+        draw_text(
+            image,
+            (
+                "Capture : "
+                f"{session.left_metadata.capture_timestamp_ms}"
+            ),
+            10,
+            y,
+        )
+
+        y += step
+
+        draw_text(
+            image,
+            (
+                "Receive : "
+                f"{session.left_metadata.receive_timestamp_ms}"
+            ),
+            10,
+            y,
+        )
+
+    #
+    # Right camera
+    #
+
+    if session.right_metadata is not None:
+
+        x = image.shape[1] // 2 + 20
+        y = 56
+
+        draw_text(
+            image,
+            "RIGHT",
+            x,
+            y,
+            (0, 255, 0),
+        )
+
+        y += step
+
+        draw_text(
+            image,
+            f"Frame : {session.right_metadata.frame_number}",
+            x,
+            y,
+        )
+
+        y += step
+
+        draw_text(
+            image,
+            (
+                "Capture : "
+                f"{session.right_metadata.capture_timestamp_ms}"
+            ),
+            x,
+            y,
+        )
+
+        y += step
+
+        draw_text(
+            image,
+            (
+                "Receive : "
+                f"{session.right_metadata.receive_timestamp_ms}"
+            ),
+            x,
+            y,
+        )
 
     #
     # Bottom help
     #
 
-    help_text = (
-        "Space Pause | H HUD | +/- Speed | Q Quit"
-    )
-
     draw_text(
         image,
-        help_text,
+        "Space Pause | +/- Speed | H HUD | Q Quit",
         10,
         image.shape[0] - 10,
         (180, 180, 180),
     )
-
-    #
-    # Pause banner
-    #
 
     if session.paused:
 
@@ -201,197 +489,42 @@ def draw_overlay(
             cv2.LINE_AA,
         )
 
-def load_rows(csv_path: Path) -> list[PlaybackRow]:
-    """
-    Load synchronization metadata from CSV.
-    """
 
-    rows: list[PlaybackRow] = []
-
-    with csv_path.open(
-        "r",
-        newline="",
-        encoding="utf-8",
-    ) as f:
-
-        reader = csv.DictReader(f)
-
-        required_columns = (
-            "LeftFrame",
-            "RightFrame",
-            "SyncTickMs",
-            "CaptureDeltaMs",
-            "Status",
-        )
-
-        missing = [
-            column
-            for column in required_columns
-            if column not in reader.fieldnames
-        ]
-
-        if missing:
-            raise ValueError(
-                f"CSV missing required columns: {missing}"
-            )
-
-        for row in reader:
-
-            rows.append(
-                PlaybackRow(
-                    left_frame=int(row["LeftFrame"]),
-                    right_frame=int(row["RightFrame"]),
-                    timestamp_ms=int(row["SyncTickMs"]),
-                    delta_ms=float(row["CaptureDeltaMs"]),
-                    status=row["Status"],
-                )
-            )
-
-    return rows
-
-def load_session(
-    patient_directory: Path,
-) -> PlaybackSession:
-    """
-    Load an existing patient recording.
-    """
-
-    patient_directory = Path(patient_directory)
-
-    if not patient_directory.exists():
-        raise FileNotFoundError(patient_directory)
-
-    left_path = patient_directory / LEFT_VIDEO
-    right_path = patient_directory / RIGHT_VIDEO
-    csv_path = patient_directory / SYNC_CSV
-
-    for path in (
-        left_path,
-        right_path,
-        csv_path,
-    ):
-        if not path.exists():
-            raise FileNotFoundError(path)
-
-    left_capture = cv2.VideoCapture(str(left_path))
-    right_capture = cv2.VideoCapture(str(right_path))
-
-    if not left_capture.isOpened():
-        raise RuntimeError(
-            f"Unable to open {left_path}"
-        )
-
-    if not right_capture.isOpened():
-        raise RuntimeError(
-            f"Unable to open {right_path}"
-        )
-
-    rows = load_rows(csv_path)
-
-    left_frames = int(
-        left_capture.get(
-            cv2.CAP_PROP_FRAME_COUNT
-        )
-    )
-
-    right_frames = int(
-        right_capture.get(
-            cv2.CAP_PROP_FRAME_COUNT
-        )
-    )
-
-    print("\nPlayback Session")
-
-    print(
-        f"CSV rows:      {len(rows)}"
-    )
-
-    print(
-        f"Left frames:   {left_frames}"
-    )
-
-    print(
-        f"Right frames:  {right_frames}"
-    )
-
-    if left_frames != len(rows):
-        print(
-            "WARNING: Left video frame count "
-            "does not match CSV."
-        )
-
-    if right_frames != len(rows):
-        print(
-            "WARNING: Right video frame count "
-            "does not match CSV."
-        )
-
-    return PlaybackSession(
-        patient_directory=patient_directory,
-        left_capture=left_capture,
-        right_capture=right_capture,
-        rows=rows,
-    )
-
-def read_next_pair(
-    session: PlaybackSession,
-) -> tuple[
-    PlaybackRow,
-    np.ndarray,
-    np.ndarray,
-] | None:
-    """
-    Read the next synchronized stereo frame pair.
-
-    Returns
-    -------
-    PlaybackRow, left_frame, right_frame
-
-    or
-
-    None when playback has reached the end.
-    """
-
-    if session.current_index >= len(session.rows):
-        return None
-
-    success_left, left = session.left_capture.read()
-    success_right, right = session.right_capture.read()
-
-    if not success_left:
-        raise RuntimeError(
-            "Unexpected end of left video."
-        )
-
-    if not success_right:
-        raise RuntimeError(
-            "Unexpected end of right video."
-        )
-
-    row = session.rows[session.current_index]
-
-    session.current_index += 1
-
-    return row, left, right
-
-def close_session(
-    session: PlaybackSession,
-) -> None:
-    """
-    Release all playback resources.
-    """
-
-    session.left_capture.release()
-    session.right_capture.release()
-
-    cv2.destroyAllWindows()
+# ==========================================================
+# Frame Composition
+# ==========================================================
 
 def build_display_frame(
     session: PlaybackSession,
-    row: PlaybackRow,
-    left,
-    right,
 ):
+
+    if (
+        session.left_image is None
+        and
+        session.right_image is None
+    ):
+        return None
+
+    if session.left_image is None:
+
+        left = np.zeros_like(
+            session.right_image
+        )
+
+    else:
+
+        left = session.left_image.copy()
+
+    if session.right_image is None:
+
+        right = np.zeros_like(
+            session.left_image
+        )
+
+    else:
+
+        right = session.right_image.copy()
+
     combined = cv2.hconcat(
         [
             left,
@@ -399,99 +532,132 @@ def build_display_frame(
         ]
     )
 
-    combined = combined.copy()
-
     if session.show_overlay:
+
         draw_overlay(
             session,
-            row,
             combined,
         )
 
     return combined
 
-def present_frame(
-    image,
-    delay_ms: int,
-) -> int:
-    cv2.imshow(
-        "Playback",
-        image,
+
+# ==========================================================
+# Playback Timing
+# ==========================================================
+
+def update_clock(
+    session: PlaybackSession,
+):
+
+    next_times = []
+
+    if session.left_index < len(session.left_rows):
+
+        next_times.append(
+            session.left_rows[
+                session.left_index
+            ].capture_timestamp_ms
+        )
+
+    if session.right_index < len(session.right_rows):
+
+        next_times.append(
+            session.right_rows[
+                session.right_index
+            ].capture_timestamp_ms
+        )
+
+    if not next_times:
+
+        return False
+
+    next_time = min(next_times)
+
+    if session.previous_capture_time is None:
+
+        delta = 1
+
+    else:
+
+        delta = max(
+            1,
+            next_time
+            - session.previous_capture_time
+        )
+
+    session.previous_capture_time = next_time
+
+    wait = max(
+        1,
+        round(
+            delta
+            / session.playback_speed
+        ),
     )
 
-    return cv2.waitKey(delay_ms)
+    key = cv2.waitKey(wait)
+
+    session.playback_clock_ms = next_time
+
+    return key
+
+# ==========================================================
+# Playback
+# ==========================================================
 
 def playback(
     session: PlaybackSession,
-):
+) -> None:
+    """
+    Play both recordings using their capture timestamps.
+
+    Each camera advances independently according to its own
+    CSV timestamps while sharing a common playback clock.
+    """
+
+    cv2.namedWindow(
+        "Playback",
+        cv2.WINDOW_NORMAL,
+    )
+
     while True:
 
-        result = read_next_pair(session)
+        #
+        # End once both recordings have been exhausted.
+        #
 
-        if result is None:
+        if (
+            session.left_index >= len(session.left_rows)
+            and
+            session.right_index >= len(session.right_rows)
+        ):
             break
 
-        row, left, right = result
+        #
+        # Advance whichever cameras should update at the
+        # current playback clock.
+        #
 
-        image = build_display_frame(
-            session,
-            row,
-            left,
-            right,
-        )
+        advance_left(session)
+        advance_right(session)
 
-        delay_ms = playback_delay(
-            session,
-            row,
-        )
+        image = build_display_frame(session)
 
-        key = present_frame(
-            image,
-            delay_ms,
-        )
+        if image is not None:
 
-        if key == ord(" "):
-            session.paused = not session.paused
-        elif key == ord("+"):
-
-            session.playback_speed *= 2
-
-        elif key == ord("-"):
-
-            session.playback_speed /= 2
-
-        
-        elif key in (
-            ord("h"),
-            ord("H"),
-        ):
-            session.show_overlay = (
-                not session.show_overlay
+            cv2.imshow(
+                "Playback",
+                image,
             )
-        
-        session.playback_speed = min(
-            max(
-                session.playback_speed,
-                0.25,
-            ),
-            8.0,
-        )
 
+            session.frames_presented += 1
 
-        while session.paused:
-            key = cv2.waitKey(30)
+        key = update_clock(session)
 
-            if key == ord(" "):
-                session.paused = False
-
-            elif key in (
-                27,
-                ord("q"),
-                ord("Q"),
-            ):
-                return
-
-        session.frames_presented += 1
+        #
+        # Quit
+        #
 
         if key in (
             27,
@@ -500,50 +666,135 @@ def playback(
         ):
             break
 
-def playback_delay(
+        #
+        # Pause
+        #
+
+        elif key == ord(" "):
+
+            session.paused = not session.paused
+
+            while session.paused:
+
+                image = build_display_frame(session)
+
+                if image is not None:
+
+                    cv2.imshow(
+                        "Playback",
+                        image,
+                    )
+
+                pause_key = cv2.waitKey(30)
+
+                if pause_key == ord(" "):
+                    session.paused = False
+
+                elif pause_key in (
+                    27,
+                    ord("q"),
+                    ord("Q"),
+                ):
+                    return
+
+                elif pause_key in (
+                    ord("h"),
+                    ord("H"),
+                ):
+                    session.show_overlay = (
+                        not session.show_overlay
+                    )
+
+        #
+        # Speed controls
+        #
+
+        elif key in (
+            ord("+"),
+            ord("="),
+        ):
+
+            session.playback_speed *= 2.0
+
+        elif key in (
+            ord("-"),
+            ord("_"),
+        ):
+
+            session.playback_speed /= 2.0
+
+        #
+        # Toggle overlay
+        #
+
+        elif key in (
+            ord("h"),
+            ord("H"),
+        ):
+
+            session.show_overlay = (
+                not session.show_overlay
+            )
+
+        #
+        # Clamp playback speed
+        #
+
+        session.playback_speed = max(
+            0.25,
+            min(
+                session.playback_speed,
+                8.0,
+            ),
+        )
+
+
+# ==========================================================
+# Cleanup
+# ==========================================================
+
+def close_session(
     session: PlaybackSession,
-    row: PlaybackRow,
-) -> int:
-    if session.previous_timestamp_ms is None:
+) -> None:
 
-        session.previous_timestamp_ms = row.timestamp_ms
+    session.left_capture.release()
+    session.right_capture.release()
 
-        return 1
+    cv2.destroyAllWindows()
 
-    delay = (
-        row.timestamp_ms
-        - session.previous_timestamp_ms
+
+# ==========================================================
+# Entry Point
+# ==========================================================
+
+def main() -> None:
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Playback an Eyetrackers recording."
+        )
     )
-
-    session.previous_timestamp_ms = row.timestamp_ms
-
-    delay = max(delay, 1)
-
-    delay = max(
-        1,
-        round(
-            delay / session.playback_speed
-        ),
-    )
-
-    return delay
-
-if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "patient_directory",
         type=Path,
+        help="Patient recording directory",
     )
 
     args = parser.parse_args()
 
     session = load_session(
-        args.patient_directory
+        args.patient_directory,
     )
 
     try:
+
         playback(session)
+
     finally:
+
         close_session(session)
+
+
+if __name__ == "__main__":
+    main()

@@ -6,6 +6,7 @@ CSV output for synchronized stereo frames.
 import csv
 from Eyetrackers.Core import config
 
+from Eyetrackers.Core.tracker_types import FramePacket
 
 
 class CSVLogger:
@@ -28,34 +29,15 @@ class CSVLogger:
 
 
 
-    def write(self, pair):
-
-        left = pair.left
-        right = pair.right
-
-
+    def write(self, frame: FramePacket):
         self.writer.writerow(
             [
-                pair.sync_timestamp_ms,
-
-                left.frame_number,
-                left.capture_ms,
-                left.receive_ms,
-
-                right.frame_number,
-                right.capture_ms,
-                right.receive_ms,
-
-                pair.delta_ms,
-                pair.receive_delta_ms,
-
-                left.latency_ms,
-                right.latency_ms,
-
-                pair.status,
+                frame.frame_number,
+                frame.capture_ms,
+                frame.receive_ms,
+                frame.latency_ms,
             ]
         )
-
 
         self.file.flush()
 
