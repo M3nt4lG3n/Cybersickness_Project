@@ -11,6 +11,17 @@ import csv
 output_file = "test_right_pupil_1.csv"
 generate_csv = True
 
+# RELAXED_THRESHOLD = 35
+# MEDIUM_THRESHOLD = 45
+# STRICT_THRESHOLD = 55 
+# SQUARE_SIZE = 150
+
+RELAXED_THRESHOLD = 19
+MEDIUM_THRESHOLD = 25
+STRICT_THRESHOLD = 31
+
+SQUARE_SIZE = 200
+
 # Crop the image to maintain a specific aspect ratio (width:height) before resizing. 
 def crop_to_aspect_ratio(image, width=640, height=480):
     
@@ -392,14 +403,14 @@ def process_frame(frame):
     
     # apply thresholding operations at different levels
     # at least one should give us a good ellipse segment
-    thresholded_image_strict = apply_binary_threshold(gray_frame, darkest_pixel_value, 10)#lite
-    thresholded_image_strict = mask_outside_square(thresholded_image_strict, darkest_point, 250)
+    thresholded_image_strict = apply_binary_threshold(gray_frame, darkest_pixel_value, STRICT_THRESHOLD)#lite
+    thresholded_image_strict = mask_outside_square(thresholded_image_strict, darkest_point, SQUARE_SIZE)
 
-    thresholded_image_medium = apply_binary_threshold(gray_frame, darkest_pixel_value, 30)#medium
-    thresholded_image_medium = mask_outside_square(thresholded_image_medium, darkest_point, 250)
+    thresholded_image_medium = apply_binary_threshold(gray_frame, darkest_pixel_value, MEDIUM_THRESHOLD)#medium
+    thresholded_image_medium = mask_outside_square(thresholded_image_medium, darkest_point, SQUARE_SIZE)
     
-    thresholded_image_relaxed = apply_binary_threshold(gray_frame, darkest_pixel_value, 50)#heavy
-    thresholded_image_relaxed = mask_outside_square(thresholded_image_relaxed, darkest_point, 250)
+    thresholded_image_relaxed = apply_binary_threshold(gray_frame, darkest_pixel_value, RELAXED_THRESHOLD)#heavy
+    thresholded_image_relaxed = mask_outside_square(thresholded_image_relaxed, darkest_point, SQUARE_SIZE)
     
     #take the three images thresholded at different levels and process them
     final_rotated_rect = process_frames(thresholded_image_strict, thresholded_image_medium, thresholded_image_relaxed, frame, gray_frame, darkest_point, False, False)
@@ -472,14 +483,14 @@ def process_video(video_path, input_method):
         
         # apply thresholding operations at different levels
         # at least one should give us a good ellipse segment
-        thresholded_image_strict = apply_binary_threshold(gray_frame, darkest_pixel_value, 5)#lite
-        thresholded_image_strict = mask_outside_square(thresholded_image_strict, darkest_point, 250)
+        thresholded_image_strict = apply_binary_threshold(gray_frame, darkest_pixel_value, STRICT_THRESHOLD)#lite
+        thresholded_image_strict = mask_outside_square(thresholded_image_strict, darkest_point, SQUARE_SIZE)
 
-        thresholded_image_medium = apply_binary_threshold(gray_frame, darkest_pixel_value, 30)#medium
-        thresholded_image_medium = mask_outside_square(thresholded_image_medium, darkest_point, 250)
+        thresholded_image_medium = apply_binary_threshold(gray_frame, darkest_pixel_value, MEDIUM_THRESHOLD)#medium
+        thresholded_image_medium = mask_outside_square(thresholded_image_medium, darkest_point, SQUARE_SIZE)
         
-        thresholded_image_relaxed = apply_binary_threshold(gray_frame, darkest_pixel_value, 50)#heavy
-        thresholded_image_relaxed = mask_outside_square(thresholded_image_relaxed, darkest_point, 250)
+        thresholded_image_relaxed = apply_binary_threshold(gray_frame, darkest_pixel_value, RELAXED_THRESHOLD)#heavy
+        thresholded_image_relaxed = mask_outside_square(thresholded_image_relaxed, darkest_point, SQUARE_SIZE)
         
         #take the three images thresholded at different levels and process them
         pupil_rotated_rect = process_frames(thresholded_image_strict, thresholded_image_medium, thresholded_image_relaxed, frame, gray_frame, darkest_point, debug_mode_on, True)

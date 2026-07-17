@@ -66,7 +66,7 @@ CSV_FILE = CSV_DIR / "test.csv"
 
 LEFT_STREAM = "http://140.228.2.93:81/stream"
 
-RIGHT_STREAM = "http://140.228.2.118:81/stream"
+RIGHT_STREAM = "http://140.228.3.127:81/stream"
 
 # ==========================================================
 # Enable Debug Messages
