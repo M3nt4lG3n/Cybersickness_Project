@@ -6,21 +6,21 @@ from tkinter import Tk, filedialog
 # -----------------------------
 
 # Right
-# x = 119
-# y = 79
-# crop_width = 109
-# crop_height = 138
-
-# Left
-x = 130
-y = 70
+x = 119
+y = 79
 crop_width = 109
 crop_height = 138
+
+# Left
+# x = 130
+# y = 70
+# crop_width = 109
+# crop_height = 138
 
 # -----------------------------
 # Border Settings
 # -----------------------------
-border_size = 30                  # Border thickness in pixels
+border_size = 0                  # Border thickness in pixels
 border_color = (255, 255, 255)   # White (B, G, R)
 
 # -----------------------------

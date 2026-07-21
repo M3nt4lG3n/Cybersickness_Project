@@ -8,7 +8,7 @@ from tkinter import filedialog
 import matplotlib.pyplot as plt
 import csv
 
-output_file = "test_right_pupil_1.csv"
+output_file = "left_pupil.csv"
 generate_csv = True
 
 # RELAXED_THRESHOLD = 35

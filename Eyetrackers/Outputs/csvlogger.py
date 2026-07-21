@@ -35,7 +35,6 @@ class CSVLogger:
                 frame.frame_number,
                 frame.capture_ms,
                 frame.receive_ms,
-                frame.latency_ms,
             ]
         )
 
