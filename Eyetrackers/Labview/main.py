@@ -47,6 +47,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from datetime import datetime
+
 from pathlib import Path
 
 
@@ -56,7 +58,6 @@ import tkinter as tk
 
 from tkinter import (
     filedialog,
-    simpledialog,
     messagebox,
 )
 
@@ -81,7 +82,14 @@ from Eyetrackers.Labview.labscribe_io import (
 )
 
 
-from .ecg import analyze_ecg
+from Eyetrackers.Labview.timestamps import (
+
+    parse_patient_folder_datetime,
+
+)
+
+
+from .ecg import analyze_ecg, plot_ecg
 
 
 from .balance import analyze_balance
@@ -105,6 +113,9 @@ from .visualization import (
 )
 
 
+from . import merger
+
+
 
 # ============================================================
 # Configuration
@@ -120,21 +131,15 @@ class AnalysisConfig:
 
     output_directory: Path
 
-    csv_creation_date: str
-
-    recording_hour: int
-
-    recording_am_pm: str
-
-    recording_minute: int = 0
-
-    recording_second: int = 0
+    folder_datetime: datetime
 
     generate_video: bool = True
 
     video_config: VisualizationConfig = field(
         default_factory=VisualizationConfig
     )
+
+    run_merge: bool = True
 
 
 
@@ -163,6 +168,12 @@ def create_output_paths(
 
     return {
 
+        "timestamped":
+            config.output_directory
+            /
+            f"{stem}_timestamped.csv",
+
+
         "analysis":
             config.output_directory
             /
@@ -173,6 +184,12 @@ def create_output_paths(
             config.output_directory
             /
             f"{stem}_beats.csv",
+
+
+        "ecg_png":
+            config.output_directory
+            /
+            f"{stem}_ecg.png",
 
 
         "summary":
@@ -341,21 +358,38 @@ def run_analysis(
 
         lab_data,
 
-        config.csv_creation_date,
-
-        config.recording_hour,
-
-        config.recording_am_pm,
-
-        config.recording_minute,
-
-        config.recording_second,
+        config.folder_datetime,
     )
 
 
 
     paths = create_output_paths(
         config
+    )
+
+
+
+    # --------------------------------------------------------
+    # Export timestamped CSV
+    #
+    # This is the full LabScribe dataframe (all original
+    # columns) with the UnixTime_ms column added, based on
+    # the recording date/time parsed from the standardized
+    # Patient_YYYYMMDD_HHMMSS parent folder. Exported before
+    # ECG/balance processing so it is always available even
+    # if later stages fail.
+    # --------------------------------------------------------
+
+    print(
+        "Exporting timestamped CSV..."
+    )
+
+
+    export_dataframe(
+
+        df,
+
+        paths["timestamped"],
     )
 
 
@@ -442,6 +476,30 @@ def run_analysis(
 
 
     # --------------------------------------------------------
+    # ECG plot
+    # --------------------------------------------------------
+
+    print(
+        "Rendering ECG plot..."
+    )
+
+
+    plot_ecg(
+
+        ecg_result.raw_signal,
+
+        ecg_result.timestamps,
+
+        ecg_result.beats_df,
+
+        paths["ecg_png"],
+
+        title=lab_data.metadata.file_name,
+    )
+
+
+
+    # --------------------------------------------------------
     # Summary
     # --------------------------------------------------------
 
@@ -479,6 +537,61 @@ def run_analysis(
     print(
         "Summary exported."
     )
+
+
+
+    # --------------------------------------------------------
+    # Balance board video
+    # --------------------------------------------------------
+
+    if config.generate_video:
+
+        generate_balance_video(
+
+            config,
+
+            ecg_result,
+
+            balance_result,
+
+            paths["video"],
+        )
+
+    else:
+
+        print(
+            "Video generation skipped."
+        )
+
+
+    # --------------------------------------------------------
+    # Merge with Unity biometrics + eye tracking data
+    # --------------------------------------------------------
+
+    if config.run_merge:
+
+        print(
+            "Merging with biometrics and eye-tracking data..."
+        )
+
+        merger.run_merge_from_analysis_paths(
+
+            config.input_csv,
+
+            config.output_directory,
+
+            paths,
+        )
+
+        print(
+            "Merge complete."
+        )
+
+    else:
+
+        print(
+            "Merge step skipped."
+        )
 
 # ============================================================
 # Video Rendering
@@ -567,78 +680,25 @@ def get_user_config() -> AnalysisConfig | None:
 
 
     # --------------------------------------------------------
-    # Date
+    # Recording date/time (from the standardized parent
+    # folder name: Patient_YearMonthDay_HourMinuteSecond)
     # --------------------------------------------------------
 
-    date = simpledialog.askstring(
+    try:
 
-        "Recording Date",
+        folder_datetime = parse_patient_folder_datetime(
+            Path(csv_file).parent.name
+        )
 
-        "Enter CSV creation date:\n(example: 07/20/2026)",
-
-    )
-
-
-    if not date:
-
-        return None
-
-
-
-    # --------------------------------------------------------
-    # Recording hour
-    # --------------------------------------------------------
-
-    hour = simpledialog.askinteger(
-
-        "Recording Hour",
-
-        "Enter recording hour (1-12):",
-
-        minvalue=1,
-
-        maxvalue=12,
-
-    )
-
-
-    if hour is None:
-
-        return None
-
-
-
-    # --------------------------------------------------------
-    # AM / PM
-    # --------------------------------------------------------
-
-    ampm = simpledialog.askstring(
-
-        "AM or PM",
-
-        "Enter AM or PM:",
-
-    )
-
-
-    if not ampm:
-
-        return None
-
-
-    ampm = ampm.upper()
-
-
-    if ampm not in (
-        "AM",
-        "PM",
-    ):
+    except ValueError as error:
 
         messagebox.showerror(
 
-            "Invalid Time",
+            "Invalid Patient Folder",
 
-            "Please enter AM or PM",
+            "Could not read the recording date/time from the "
+            "parent folder name.\n\n"
+            f"{error}",
 
         )
 
@@ -676,11 +736,7 @@ def get_user_config() -> AnalysisConfig | None:
 
         output_directory=output_directory,
 
-        csv_creation_date=date,
-
-        recording_hour=hour,
-
-        recording_am_pm=ampm,
+        folder_datetime=folder_datetime,
 
         generate_video=generate_video,
 

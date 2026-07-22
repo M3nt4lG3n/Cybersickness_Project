@@ -1,20 +1,17 @@
 """
 ecg.py
 
-ECG processing utilities for the LabScribe analysis pipeline.
+Modern ECG processing pipeline for LabScribe recordings.
 
-This module is responsible for:
-
-    • ECG cleaning
-    • R peak detection
-    • Robust P/Q/R/S/T fiducial pairing
-    • Heart-rate calculation
-    • Beat interval calculation
-    • ECG plotting
-    • Summary statistics
-
-Nothing in this module knows anything about balance board data or
-video rendering.
+Design goals
+------------
+• Preserve the raw ECG waveform exactly as recorded.
+• Use NeuroKit's recommended ECG pipeline.
+• Detect reliable R peaks.
+• Delineate P/Q/R/S/T waves.
+• Compute beat intervals and heart-rate statistics.
+• Export analysis CSVs.
+• Plot the original ECG waveform with detected fiducials.
 
 Author:
     Brian Bizon / OpenAI
@@ -25,31 +22,54 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
+import neurokit2 as nk
 import numpy as np
 import pandas as pd
-import neurokit2 as nk
-import matplotlib.pyplot as plt
 
 
-# ============================================================
+# ==========================================================
 # Constants
-# ============================================================
+# ==========================================================
 
-DEFAULT_SAMPLING_RATE = 1000
-
-
-# Physiological search windows relative to the R peak.
-# Values are in seconds and converted to samples when needed.
-
-P_SEARCH_WINDOW = (-0.25, -0.05)
-Q_SEARCH_WINDOW = (-0.08, 0.00)
-S_SEARCH_WINDOW = (0.00, 0.08)
-T_SEARCH_WINDOW = (0.08, 0.45)
+DEFAULT_SAMPLING_RATE = 100
 
 
-# ============================================================
+# ==========================================================
+# ECG Strip-Chart Plot Layout
+# ==========================================================
+#
+# LabScribe's live acquisition display scrolls the waveform
+# across a fine time grid, similar to a chart recorder /
+# clinical ECG strip. To reproduce that look in a static
+# image, the figure is made very wide -- proportional to the
+# recording's duration -- with:
+#
+#   • minor gridlines every ECG_MINOR_GRID_SECONDS
+#     ("small squares", millisecond-level resolution)
+#
+#   • major gridlines + labeled ticks every
+#     ECG_MAJOR_GRID_SECONDS ("big squares")
+#
+# A safety cap keeps the image from becoming unrenderable /
+# unusably large on very long recordings.
+
+ECG_MINOR_GRID_SECONDS = 0.04   # 40 ms "small square"
+ECG_MAJOR_GRID_SECONDS = 1.0    # 1 s labeled gridline
+
+ECG_PLOT_PIXELS_PER_SECOND = 200
+ECG_PLOT_DPI = 150
+
+ECG_PLOT_MIN_WIDTH_INCHES = 15
+ECG_PLOT_MAX_WIDTH_INCHES = 300
+
+ECG_PLOT_HEIGHT_INCHES = 6
+
+
+# ==========================================================
 # Dataclasses
-# ============================================================
+# ==========================================================
 
 @dataclass(slots=True)
 class ECGBeat:
@@ -73,34 +93,24 @@ class ECGBeat:
     qrs_ms: float
     qt_ms: float
 
+    p_value: float
+    q_value: float
+    r_value: float
+    s_value: float
+    t_value: float
+
 
 @dataclass(slots=True)
 class ECGAnalysisResult:
     """
-    Returned by analyze_ecg().
-
-    Attributes
-    ----------
-    clean_signal
-        Filtered ECG.
-
-    analysis_df
-        Sample-by-sample dataframe.
-
-    beats_df
-        One row per heartbeat.
-
-    summary
-        Dictionary of summary metrics.
-
-    signals
-        Raw NeuroKit signal dataframe.
-
-    info
-        NeuroKit info dictionary.
+    Complete ECG processing result.
     """
 
+    raw_signal: np.ndarray
+
     clean_signal: np.ndarray
+
+    timestamps: np.ndarray
 
     analysis_df: pd.DataFrame
 
@@ -112,73 +122,43 @@ class ECGAnalysisResult:
 
     info: dict
 
+# ==========================================================
+# Validation
+# ==========================================================
 
-# ============================================================
-# Helper Functions
-# ============================================================
-
-def nearest_wave(
-    r_index: int,
-    candidates,
-    min_offset: int,
-    max_offset: int,
-) -> Optional[int]:
+def validate_ecg_input(
+    signal,
+    timestamps,
+) -> None:
     """
-    Find the closest candidate wave inside a physiological window.
-
-    Parameters
-    ----------
-    r_index
-        Sample index of the R peak.
-
-    candidates
-        Array of detected fiducial locations.
-
-    min_offset
-        Minimum allowed offset from the R peak.
-
-    max_offset
-        Maximum allowed offset from the R peak.
-
-    Returns
-    -------
-    int or None
+    Validate ECG inputs before processing.
     """
 
-    if candidates is None:
-        return None
+    if signal is None:
+        raise ValueError("ECG signal is None.")
 
-    if len(candidates) == 0:
-        return None
+    if timestamps is None:
+        raise ValueError("Timestamp array is None.")
 
-    candidates = np.asarray(candidates)
+    if len(signal) == 0:
+        raise ValueError("ECG signal is empty.")
 
-    lower = r_index + min_offset
-    upper = r_index + max_offset
+    if len(signal) != len(timestamps):
+        raise ValueError(
+            "Signal and timestamps must have identical lengths."
+        )
 
-    valid = candidates[
-        (candidates >= lower) &
-        (candidates <= upper)
-    ]
 
-    if len(valid) == 0:
-        return None
-
-    nearest = valid[
-        np.argmin(np.abs(valid - r_index))
-    ]
-
-    return int(nearest)
-
+# ==========================================================
+# Utility Functions
+# ==========================================================
 
 def sample_value(
     signal: np.ndarray,
     index: Optional[int],
 ) -> float:
     """
-    Safely return the ECG value at an index.
-
-    Missing fiducials return NaN.
+    Safely return the ECG amplitude at a sample index.
     """
 
     if index is None:
@@ -193,73 +173,36 @@ def sample_value(
     return float(signal[index])
 
 
-def milliseconds(
-    sample_difference: Optional[int],
+def interval_ms(
+    start: Optional[int],
+    end: Optional[int],
     sampling_rate: int,
 ) -> float:
     """
-    Convert a sample difference to milliseconds.
+    Convert two sample indices into milliseconds.
     """
 
-    if sample_difference is None:
+    if start is None:
+        return np.nan
+
+    if end is None:
+        return np.nan
+
+    if end <= start:
         return np.nan
 
     return (
-        sample_difference /
-        sampling_rate *
-        1000.0
+        (end - start)
+        / sampling_rate
+        * 1000.0
     )
 
 
-def safe_interval(
-    start_index: Optional[int],
-    end_index: Optional[int],
-    sampling_rate: int,
-) -> float:
-    """
-    Compute an interval between two fiducials.
-
-    Missing fiducials return NaN.
-    """
-
-    if start_index is None:
-        return np.nan
-
-    if end_index is None:
-        return np.nan
-
-    if end_index <= start_index:
-        return np.nan
-
-    return milliseconds(
-        end_index - start_index,
-        sampling_rate,
-    )
-
-
-# ============================================================
-# Internal Utilities
-# ============================================================
-
-def _window_to_samples(
-    window_seconds: tuple[float, float],
-    sampling_rate: int,
-) -> tuple[int, int]:
-    """
-    Convert a search window from seconds to samples.
-    """
-
-    return (
-        int(window_seconds[0] * sampling_rate),
-        int(window_seconds[1] * sampling_rate),
-    )
-
-
-def _heart_rate_from_rr(
+def rr_to_bpm(
     rr_ms: float,
 ) -> float:
     """
-    Convert an RR interval to BPM.
+    Convert an RR interval into beats per minute.
     """
 
     if np.isnan(rr_ms):
@@ -271,523 +214,692 @@ def _heart_rate_from_rr(
     return 60000.0 / rr_ms
 
 
-def _empty_summary() -> dict:
-    """
-    Placeholder summary dictionary.
+# ==========================================================
+# Fiducial Helpers
+# ==========================================================
 
-    Populated later by compute_hr_statistics().
+def _sanitize_indices(values) -> np.ndarray:
+    """
+    Convert NeuroKit outputs into a clean integer array.
+
+    NeuroKit may return lists containing None or NaN.
+    """
+
+    if values is None:
+        return np.array([], dtype=int)
+
+    cleaned = []
+
+    for value in values:
+
+        if value is None:
+            continue
+
+        try:
+
+            if np.isnan(value):
+                continue
+
+        except TypeError:
+            pass
+
+        cleaned.append(int(value))
+
+    return np.asarray(cleaned, dtype=int)
+
+
+def _match_wave(
+    r_index: int,
+    candidates: np.ndarray,
+    before: int,
+    after: int,
+) -> Optional[int]:
+    """
+    Match the nearest fiducial to an R peak.
+
+    Parameters
+    ----------
+    before
+        Maximum samples before R.
+
+    after
+        Maximum samples after R.
+    """
+
+    if len(candidates) == 0:
+        return None
+
+    lower = r_index - before
+    upper = r_index + after
+
+    valid = candidates[
+        (candidates >= lower)
+        & (candidates <= upper)
+    ]
+
+    if len(valid) == 0:
+        return None
+
+    return int(
+        valid[
+            np.argmin(
+                np.abs(valid - r_index)
+            )
+        ]
+    )
+
+
+# ==========================================================
+# Physiological Search Windows
+# ==========================================================
+
+def search_windows(
+    sampling_rate: int,
+):
+    """
+    Convert physiological windows into samples.
+
+    Returns
+    -------
+    dict
     """
 
     return {
-        "AverageHeartRate": np.nan,
-        "MinimumHeartRate": np.nan,
-        "MaximumHeartRate": np.nan,
-        "HeartRateStd": np.nan,
-        "TotalHeartBeats": 0,
+
+        "P": (
+            int(0.25 * sampling_rate),
+            int(0.05 * sampling_rate),
+        ),
+
+        "Q": (
+            int(0.08 * sampling_rate),
+            0,
+        ),
+
+        "S": (
+            0,
+            int(0.08 * sampling_rate),
+        ),
+
+        "T": (
+            int(0.02 * sampling_rate),
+            int(0.45 * sampling_rate),
+        ),
     }
 
-# ============================================================
+# ==========================================================
 # ECG Feature Detection
-# ============================================================
+# ==========================================================
 
 def detect_ecg_features(
     signal: np.ndarray | pd.Series,
     timestamps: np.ndarray | pd.Series,
     sampling_rate: int = DEFAULT_SAMPLING_RATE,
-) -> tuple[list[ECGBeat], np.ndarray, pd.DataFrame, dict]:
+) -> tuple[list[ECGBeat], np.ndarray, np.ndarray, pd.DataFrame, dict]:
     """
-    Detect ECG fiducials using NeuroKit2.
-
-    This function performs:
-
-        1. ECG cleaning
-        2. R peak detection
-        3. Delineation of P/Q/S/T waves
-        4. Robust fiducial pairing
-        5. Beat interval calculation
-
-    Unlike the previous implementation, this does NOT assume that
-    NeuroKit returns equal-length arrays for each fiducial. Each beat
-    is matched independently around its R peak.
+    Detect ECG fiducials using NeuroKit's complete processing
+    pipeline.
 
     Parameters
     ----------
     signal
-        Raw ECG signal.
+        Raw ECG waveform from LabScribe.
 
     timestamps
-        Unix timestamps (currently retained for future use).
+        Unix timestamps corresponding to each sample.
 
     sampling_rate
-        ECG sampling frequency (Hz).
+        ECG sampling frequency.
 
     Returns
     -------
     beats
-        List[ECGBeat]
+        List of ECGBeat objects.
+
+    raw_signal
+        Original ECG waveform.
 
     clean_signal
-        Filtered ECG signal.
+        NeuroKit cleaned waveform.
 
     signals
-        NeuroKit signals dataframe.
+        NeuroKit processed dataframe.
 
     info
         NeuroKit information dictionary.
     """
 
-    # --------------------------------------------------------
-    # Convert inputs
-    # --------------------------------------------------------
+    validate_ecg_input(signal, timestamps)
 
-    signal = np.asarray(signal, dtype=float)
+    raw_signal = np.asarray(signal, dtype=float)
     timestamps = np.asarray(timestamps)
 
-    # --------------------------------------------------------
-    # Clean ECG
-    # --------------------------------------------------------
-
-    clean_signal = nk.ecg_clean(
-        signal,
-        sampling_rate=sampling_rate,
-    )
-
-    print("ECG debug:")
-    print("Samples:", len(clean_signal))
-    print("Min:", np.min(clean_signal))
-    print("Max:", np.max(clean_signal))
-    print("Mean:", np.mean(clean_signal))
-    print("Std:", np.std(clean_signal))
-    print("Sampling rate:", sampling_rate)
-
-    # --------------------------------------------------------
-    # NeuroKit processing
-    # --------------------------------------------------------
+    # ------------------------------------------------------
+    # Complete NeuroKit pipeline
+    # ------------------------------------------------------
 
     try:
-        signals, info = nk.ecg_peaks(
-            clean_signal,
+
+        signals, info = nk.ecg_process(
+            raw_signal,
             sampling_rate=sampling_rate,
-            method="neurokit",
         )
 
     except Exception as error:
 
-        print(
-            f"NeuroKit ECG processing failed: {error}"
+        raise RuntimeError(
+            f"NeuroKit ECG processing failed:\n{error}"
         )
 
-        signals = pd.DataFrame(
-            {
-                "ECG_Clean": clean_signal
-            }
-        )
-
-        info = {
-            "ECG_R_Peaks": []
-        }
-    
-    # --------------------------------------------------------
-    # Validate detected R peaks
-    # --------------------------------------------------------
-
-    r_peaks = np.asarray(
-        info["ECG_R_Peaks"],
-        dtype=int,
-    )
-
-    import matplotlib.pyplot as plt
-
-    plt.figure(figsize=(15, 4))
-    plt.plot(clean_signal, label="Clean ECG")
-
-    if len(r_peaks):
-        plt.scatter(
-            r_peaks,
-            clean_signal[r_peaks],
-            color="red",
-            label="Detected R Peaks",
-            zorder=5,
-        )
-
-    plt.legend()
-    plt.title("ECG with Detected R Peaks")
-    plt.show()
-
-    print("Detected R peaks:", len(r_peaks))
-
-    if len(r_peaks) > 0:
-        print("First 10:", r_peaks[:10])
-
-    if len(r_peaks) < 2:
-
-        print(
-            "Insufficient R peaks detected. "
-            "Skipping ECG delineation."
-        )
-
-        return (
-            [],
-            clean_signal,
-            signals,
-            info,
-        )
-
-    # --------------------------------------------------------
-    # Delineate ECG waveform
-    # --------------------------------------------------------
-
-    try:
-
-        _, waves = nk.ecg_delineate(
-            clean_signal,
-            info["ECG_R_Peaks"],
-            sampling_rate=sampling_rate,
-            method="dwt",
-        )
-
-    except Exception:
-
-        # Fallback if DWT fails
-        _, waves = nk.ecg_delineate(
-            clean_signal,
-            info["ECG_R_Peaks"],
-            sampling_rate=sampling_rate,
-            method="peak",
-        )
-
-    # --------------------------------------------------------
-    # Fiducials
-    # --------------------------------------------------------
+    clean_signal = signals["ECG_Clean"].to_numpy()
 
     r_peaks = np.asarray(
         info.get("ECG_R_Peaks", []),
         dtype=int,
     )
 
-    print("Detected R peaks:", len(r_peaks))
+    print(f"Detected {len(r_peaks)} R peaks")
 
     if len(r_peaks):
-        print("First 10:", r_peaks[:10])
 
-    p_peaks = np.asarray(
-        waves.get("ECG_P_Peaks", []),
-        dtype=int,
+        print(
+            "First R peaks:",
+            r_peaks[:10]
+        )
+
+    if len(r_peaks) < 2:
+
+        return (
+            [],
+            raw_signal,
+            clean_signal,
+            signals,
+            info,
+        )
+
+    # ------------------------------------------------------
+    # ECG Delineation
+    # ------------------------------------------------------
+
+    try:
+
+        _, waves = nk.ecg_delineate(
+            clean_signal,
+            r_peaks,
+            sampling_rate=sampling_rate,
+            method="dwt",
+        )
+
+    except Exception:
+
+        print(
+            "DWT delineation failed."
+            " Falling back to peak method."
+        )
+
+        _, waves = nk.ecg_delineate(
+            clean_signal,
+            r_peaks,
+            sampling_rate=sampling_rate,
+            method="peak",
+        )
+
+    # ------------------------------------------------------
+    # Fiducial arrays
+    # ------------------------------------------------------
+
+    p_peaks = _sanitize_indices(
+        waves.get("ECG_P_Peaks")
     )
 
-    print("Detected P peaks:", len(p_peaks))
-
-    if len(p_peaks):
-        print("First 10:", p_peaks[:10])
-
-    q_peaks = np.asarray(
-        waves.get("ECG_Q_Peaks", []),
-        dtype=int,
+    q_peaks = _sanitize_indices(
+        waves.get("ECG_Q_Peaks")
     )
 
-    print("Detected Q peaks:", len(q_peaks))
-
-    if len(q_peaks):
-        print("First 10:", q_peaks[:10])
-
-    s_peaks = np.asarray(
-        waves.get("ECG_S_Peaks", []),
-        dtype=int,
+    s_peaks = _sanitize_indices(
+        waves.get("ECG_S_Peaks")
     )
 
-    print("Detected S peaks:", len(s_peaks))
-    if len(s_peaks):
-        print("First 10:", s_peaks[:10])
-
-    t_peaks = np.asarray(
-        waves.get("ECG_T_Peaks", []),
-        dtype=int,
+    t_peaks = _sanitize_indices(
+        waves.get("ECG_T_Peaks")
     )
 
-    print("Detected T peaks:", len(t_peaks))
-
-    if len(t_peaks):
-        print("First 10:", t_peaks[:10])
-
-    # --------------------------------------------------------
-    # Convert physiological windows to samples
-    # --------------------------------------------------------
-
-    p_window = _window_to_samples(
-        P_SEARCH_WINDOW,
-        sampling_rate,
+    windows = search_windows(
+        sampling_rate
     )
-
-    q_window = _window_to_samples(
-        Q_SEARCH_WINDOW,
-        sampling_rate,
-    )
-
-    s_window = _window_to_samples(
-        S_SEARCH_WINDOW,
-        sampling_rate,
-    )
-
-    t_window = _window_to_samples(
-        T_SEARCH_WINDOW,
-        sampling_rate,
-    )
-
-    # --------------------------------------------------------
-    # Build heartbeat list
-    # --------------------------------------------------------
 
     beats: list[ECGBeat] = []
 
-    previous_r: int | None = None
+    previous_r = None
 
-    for beat_number, r in enumerate(r_peaks, start=1):
+    # ------------------------------------------------------
+    # Build beat list
+    # ------------------------------------------------------
 
-        # --------------------------------------------
-        # Robust wave pairing
-        # --------------------------------------------
+    for beat_number, r in enumerate(
+        r_peaks,
+        start=1,
+    ):
 
-        p = nearest_wave(
+        p = _match_wave(
             r,
             p_peaks,
-            *p_window,
+            *windows["P"],
         )
 
-        q = nearest_wave(
+        q = _match_wave(
             r,
             q_peaks,
-            *q_window,
+            *windows["Q"],
         )
 
-        s = nearest_wave(
+        s = _match_wave(
             r,
             s_peaks,
-            *s_window,
+            *windows["S"],
         )
 
-        t = nearest_wave(
+        t = _match_wave(
             r,
             t_peaks,
-            *t_window,
+            *windows["T"],
         )
 
-        # --------------------------------------------
+        # ----------------------------------------------
         # RR interval
-        # --------------------------------------------
+        # ----------------------------------------------
 
         if previous_r is None:
 
-            rr_ms = np.nan
-            heart_rate = np.nan
+            rr = np.nan
+            bpm = np.nan
 
         else:
 
-            rr_ms = milliseconds(
-                r - previous_r,
-                sampling_rate,
+            rr = (
+                (r - previous_r)
+                / sampling_rate
+                * 1000.0
             )
 
-            heart_rate = _heart_rate_from_rr(
-                rr_ms,
-            )
+            bpm = rr_to_bpm(rr)
 
         previous_r = r
 
-        # --------------------------------------------
-        # ECG intervals
-        # --------------------------------------------
-
-        pr_ms = safe_interval(
-            p,
-            q,
-            sampling_rate,
-        )
-
-        qrs_ms = safe_interval(
-            q,
-            s,
-            sampling_rate,
-        )
-
-        qt_ms = safe_interval(
-            q,
-            t,
-            sampling_rate,
-        )
-
-        # --------------------------------------------
-        # Store beat
-        # --------------------------------------------
-
         beats.append(
+
             ECGBeat(
+
                 beat_number=beat_number,
+
                 r_index=int(r),
+
                 p_index=p,
                 q_index=q,
                 s_index=s,
                 t_index=t,
-                rr_ms=rr_ms,
-                heart_rate_bpm=heart_rate,
-                pr_ms=pr_ms,
-                qrs_ms=qrs_ms,
-                qt_ms=qt_ms,
+
+                rr_ms=rr,
+                heart_rate_bpm=bpm,
+
+                pr_ms=interval_ms(
+                    p,
+                    q,
+                    sampling_rate,
+                ),
+
+                qrs_ms=interval_ms(
+                    q,
+                    s,
+                    sampling_rate,
+                ),
+
+                qt_ms=interval_ms(
+                    q,
+                    t,
+                    sampling_rate,
+                ),
+
+                # IMPORTANT:
+                # Store amplitudes from the RAW waveform,
+                # not the filtered waveform.
+
+                p_value=sample_value(
+                    raw_signal,
+                    p,
+                ),
+
+                q_value=sample_value(
+                    raw_signal,
+                    q,
+                ),
+
+                r_value=sample_value(
+                    raw_signal,
+                    r,
+                ),
+
+                s_value=sample_value(
+                    raw_signal,
+                    s,
+                ),
+
+                t_value=sample_value(
+                    raw_signal,
+                    t,
+                ),
             )
         )
 
     return (
         beats,
+        raw_signal,
         clean_signal,
         signals,
         info,
     )
 
-# ============================================================
-# Beat DataFrame Construction
-# ============================================================
+# ==========================================================
+# Beat DataFrame
+# ==========================================================
 
 def beats_to_dataframe(
     beats: list[ECGBeat],
-    clean_signal: np.ndarray,
 ) -> pd.DataFrame:
     """
     Convert ECGBeat objects into a dataframe.
 
-    Adds ECG amplitude values for each fiducial point.
-    Missing waves remain NaN.
+    Every amplitude is taken directly from the RAW ECG
+    waveform stored inside each ECGBeat.
     """
 
     rows = []
 
     for beat in beats:
 
-        rows.append(
-            {
-                "Beat": beat.beat_number,
+        rows.append({
 
-                "R_Index": beat.r_index,
-                "P_Index": beat.p_index,
-                "Q_Index": beat.q_index,
-                "S_Index": beat.s_index,
-                "T_Index": beat.t_index,
+            "Beat": beat.beat_number,
 
-                "P_Value": sample_value(
-                    clean_signal,
-                    beat.p_index,
-                ),
+            "R_Index": beat.r_index,
 
-                "Q_Value": sample_value(
-                    clean_signal,
-                    beat.q_index,
-                ),
+            "P_Index": beat.p_index,
+            "Q_Index": beat.q_index,
+            "S_Index": beat.s_index,
+            "T_Index": beat.t_index,
 
-                "R_Value": sample_value(
-                    clean_signal,
-                    beat.r_index,
-                ),
+            "P_Value": beat.p_value,
+            "Q_Value": beat.q_value,
+            "R_Value": beat.r_value,
+            "S_Value": beat.s_value,
+            "T_Value": beat.t_value,
 
-                "S_Value": sample_value(
-                    clean_signal,
-                    beat.s_index,
-                ),
+            "RR_ms": beat.rr_ms,
+            "HeartRate_BPM": beat.heart_rate_bpm,
 
-                "T_Value": sample_value(
-                    clean_signal,
-                    beat.t_index,
-                ),
-
-                "RR_ms": beat.rr_ms,
-                "HeartRate_BPM": beat.heart_rate_bpm,
-
-                "PR_ms": beat.pr_ms,
-                "QRS_ms": beat.qrs_ms,
-                "QT_ms": beat.qt_ms,
-            }
-        )
+            "PR_ms": beat.pr_ms,
+            "QRS_ms": beat.qrs_ms,
+            "QT_ms": beat.qt_ms,
+        })
 
     return pd.DataFrame(rows)
 
 
-# ============================================================
-# Analysis DataFrame Construction
-# ============================================================
+# ==========================================================
+# Sample-by-Sample Analysis DataFrame
+# ==========================================================
 
 def create_ecg_analysis_dataframe(
-    signal: np.ndarray,
-    clean_signal: np.ndarray,
+    raw_signal: np.ndarray,
     timestamps: np.ndarray,
     beats_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Create sample-level ECG dataframe.
+    Create the sample-level ECG dataframe.
 
-    This dataframe is written to *_analysis.csv.
+    Unlike the previous implementation, this stores the
+    ORIGINAL LabScribe waveform instead of the filtered
+    NeuroKit waveform.
 
-    Contains:
-
-        UnixTime_ms
-        Raw ECG
-        Clean ECG
-        Heart Rate
-        Beat number
-        Fiducial markers
+    Heart-rate values are interpolated between beats.
     """
 
-    df = pd.DataFrame(
-        {
-            "UnixTime_ms": timestamps,
+    df = pd.DataFrame({
 
-            "ECG_Raw": signal,
+        "UnixTime_ms": timestamps,
 
-            "ECG_Clean": clean_signal,
-        }
-    )
+        "ECG": raw_signal,
+
+    })
 
     df["HeartRate_BPM"] = np.nan
-
     df["Beat"] = np.nan
 
+    # Fiducial markers
+    df["P_Wave"] = 0
+    df["Q_Wave"] = 0
+    df["R_Wave"] = 0
+    df["S_Wave"] = 0
+    df["T_Wave"] = 0
 
-    # --------------------------------------------------------
+    # Fiducial amplitudes
+    df["P_Amplitude"] = np.nan
+    df["Q_Amplitude"] = np.nan
+    df["R_Amplitude"] = np.nan
+    df["S_Amplitude"] = np.nan
+    df["T_Amplitude"] = np.nan
+
+    # ------------------------------------------------------
     # Insert beat information
-    # --------------------------------------------------------
+    # ------------------------------------------------------
 
-    for _, row in beats_df.iterrows():
+    for _, beat in beats_df.iterrows():
 
-        index = int(row["R_Index"])
+        r = int(beat["R_Index"])
 
-        if index >= len(df):
+        if r >= len(df):
             continue
 
-        df.loc[
-            index,
-            "HeartRate_BPM"
-        ] = row["HeartRate_BPM"]
+        df.loc[r, "Beat"] = beat["Beat"]
+        df.loc[r, "HeartRate_BPM"] = beat["HeartRate_BPM"]
 
-        df.loc[
-            index,
-            "Beat"
-        ] = row["Beat"]
+        # ---------------------------
+        # P
+        # ---------------------------
 
+        if not pd.isna(beat["P_Index"]):
 
-    # --------------------------------------------------------
-    # Interpolate heart rate between beats
-    # --------------------------------------------------------
+            p = int(beat["P_Index"])
 
-    df["HeartRate_BPM"] = (
-        df["HeartRate_BPM"]
-        .interpolate()
-        .bfill()
-        .ffill()
-    )
+            if p < len(df):
 
+                df.loc[p, "P_Wave"] = 1
+                df.loc[p, "P_Amplitude"] = beat["P_Value"]
+
+        # ---------------------------
+        # Q
+        # ---------------------------
+
+        if not pd.isna(beat["Q_Index"]):
+
+            q = int(beat["Q_Index"])
+
+            if q < len(df):
+
+                df.loc[q, "Q_Wave"] = 1
+                df.loc[q, "Q_Amplitude"] = beat["Q_Value"]
+
+        # ---------------------------
+        # R
+        # ---------------------------
+
+        df.loc[r, "R_Wave"] = 1
+        df.loc[r, "R_Amplitude"] = beat["R_Value"]
+
+        # ---------------------------
+        # S
+        # ---------------------------
+
+        if not pd.isna(beat["S_Index"]):
+
+            s = int(beat["S_Index"])
+
+            if s < len(df):
+
+                df.loc[s, "S_Wave"] = 1
+                df.loc[s, "S_Amplitude"] = beat["S_Value"]
+
+        # ---------------------------
+        # T
+        # ---------------------------
+
+        if not pd.isna(beat["T_Index"]):
+
+            t = int(beat["T_Index"])
+
+            if t < len(df):
+
+                df.loc[t, "T_Wave"] = 1
+                df.loc[t, "T_Amplitude"] = beat["T_Value"]
+
+    # ------------------------------------------------------
+    # Interpolate Heart Rate
+    # ------------------------------------------------------
+
+    if df["HeartRate_BPM"].notna().sum() > 1:
+
+        df["HeartRate_BPM"] = (
+
+            df["HeartRate_BPM"]
+
+            .interpolate()
+
+            .bfill()
+
+            .ffill()
+
+        )
 
     return df
 
+# ==========================================================
+# ECG Summary Statistics
+# ==========================================================
 
-# ============================================================
-# High Level ECG Analysis Wrapper
-# ============================================================
+def compute_ecg_summary(
+    beats_df: pd.DataFrame,
+    raw_signal: np.ndarray,
+) -> dict:
+    """
+    Compute summary statistics for an ECG recording.
+    """
+
+    summary = {}
+
+    # ------------------------------------------------------
+    # Heart Rate
+    # ------------------------------------------------------
+
+    if len(beats_df):
+
+        heart_rate = (
+            beats_df["HeartRate_BPM"]
+            .dropna()
+        )
+
+        if len(heart_rate):
+
+            summary["AverageHeartRate"] = float(
+                heart_rate.mean()
+            )
+
+            summary["MinimumHeartRate"] = float(
+                heart_rate.min()
+            )
+
+            summary["MaximumHeartRate"] = float(
+                heart_rate.max()
+            )
+
+            summary["HeartRateStd"] = float(
+                heart_rate.std()
+            )
+
+        else:
+
+            summary["AverageHeartRate"] = np.nan
+            summary["MinimumHeartRate"] = np.nan
+            summary["MaximumHeartRate"] = np.nan
+            summary["HeartRateStd"] = np.nan
+
+        # ----------------------------------------------
+        # ECG intervals
+        # ----------------------------------------------
+
+        for column in (
+            "RR_ms",
+            "PR_ms",
+            "QRS_ms",
+            "QT_ms",
+        ):
+
+            values = (
+                beats_df[column]
+                .dropna()
+            )
+
+            summary[f"Average{column}"] = (
+
+                float(values.mean())
+
+                if len(values)
+
+                else np.nan
+
+            )
+
+    else:
+
+        summary["AverageHeartRate"] = np.nan
+        summary["MinimumHeartRate"] = np.nan
+        summary["MaximumHeartRate"] = np.nan
+        summary["HeartRateStd"] = np.nan
+
+        summary["AverageRR_ms"] = np.nan
+        summary["AveragePR_ms"] = np.nan
+        summary["AverageQRS_ms"] = np.nan
+        summary["AverageQT_ms"] = np.nan
+
+    # ------------------------------------------------------
+    # Recording statistics
+    # ------------------------------------------------------
+
+    summary["TotalHeartBeats"] = int(
+        len(beats_df)
+    )
+
+    summary["ECG_Min"] = float(
+        np.min(raw_signal)
+    )
+
+    summary["ECG_Max"] = float(
+        np.max(raw_signal)
+    )
+
+    summary["ECG_Mean"] = float(
+        np.mean(raw_signal)
+    )
+
+    summary["ECG_STD"] = float(
+        np.std(raw_signal)
+    )
+
+    return summary
+
+
+# ==========================================================
+# Complete ECG Pipeline
+# ==========================================================
 
 def analyze_ecg(
     signal: np.ndarray | pd.Series,
@@ -797,79 +909,53 @@ def analyze_ecg(
     """
     Complete ECG analysis pipeline.
 
-    This is the main function that should be called by main.py.
-
-    Returns
-    -------
-    ECGAnalysisResult
+    This is the primary public entry point.
     """
 
     (
         beats,
+        raw_signal,
         clean_signal,
         signals,
         info,
 
     ) = detect_ecg_features(
+
         signal,
         timestamps,
         sampling_rate,
-    )
 
+    )
 
     beats_df = beats_to_dataframe(
-        beats,
-        clean_signal,
+        beats
     )
-
 
     analysis_df = create_ecg_analysis_dataframe(
-        np.asarray(signal),
-        clean_signal,
+
+        raw_signal,
+
         np.asarray(timestamps),
+
         beats_df,
+
     )
 
+    summary = compute_ecg_summary(
 
-    summary = _empty_summary()
+        beats_df,
 
-    if len(beats_df) > 0:
+        raw_signal,
 
-        hr = (
-            beats_df["HeartRate_BPM"]
-            .dropna()
-        )
-
-        summary.update(
-            {
-                "AverageHeartRate":
-                    float(hr.mean())
-                    if len(hr)
-                    else np.nan,
-
-                "MinimumHeartRate":
-                    float(hr.min())
-                    if len(hr)
-                    else np.nan,
-
-                "MaximumHeartRate":
-                    float(hr.max())
-                    if len(hr)
-                    else np.nan,
-
-                "HeartRateStd":
-                    float(hr.std())
-                    if len(hr)
-                    else np.nan,
-
-                "TotalHeartBeats":
-                    int(len(beats_df)),
-            }
-        )
-
+    )
 
     return ECGAnalysisResult(
+
+        raw_signal=raw_signal,
+
         clean_signal=clean_signal,
+
+        timestamps=np.asarray(timestamps),
 
         analysis_df=analysis_df,
 
@@ -880,422 +966,232 @@ def analyze_ecg(
         signals=signals,
 
         info=info,
+
     )
 
-# ============================================================
-# ECG Summary Statistics
-# ============================================================
-
-def compute_ecg_summary(
-    beats_df: pd.DataFrame,
-    clean_signal: np.ndarray,
-) -> dict:
-    """
-    Calculate ECG summary metrics.
-
-    Metrics included:
-
-        AverageHeartRate
-        MinimumHeartRate
-        MaximumHeartRate
-        HeartRateStd
-        AverageRR
-        AveragePR
-        AverageQRS
-        AverageQT
-        TotalHeartBeats
-    """
-
-    summary = {}
-
-    # --------------------------------------------------------
-    # Heart rate statistics
-    # --------------------------------------------------------
-
-    required = [
-        "HeartRate_BPM",
-        "RR_ms",
-        "PR_ms",
-        "QRS_ms",
-        "QT_ms",
-    ]
-    
-    if not all(col in beats_df.columns for col in required):
-        return {
-            "AverageHeartRate": np.nan,
-            "MinimumHeartRate": np.nan,
-            "MaximumHeartRate": np.nan,
-            "HeartRateStd": np.nan,
-            "AverageRR": np.nan,
-            "AveragePR": np.nan,
-            "AverageQRS": np.nan,
-            "AverageQT": np.nan,
-            "TotalHeartBeats": 0,
-        }
-
-    heart_rate = (
-        beats_df["HeartRate_BPM"]
-        .dropna()
-    )
-
-    if len(heart_rate):
-
-        summary["AverageHeartRate"] = float(
-            heart_rate.mean()
-        )
-
-        summary["MinimumHeartRate"] = float(
-            heart_rate.min()
-        )
-
-        summary["MaximumHeartRate"] = float(
-            heart_rate.max()
-        )
-
-        summary["HeartRateStd"] = float(
-            heart_rate.std()
-        )
-
-    else:
-
-        summary["AverageHeartRate"] = np.nan
-        summary["MinimumHeartRate"] = np.nan
-        summary["MaximumHeartRate"] = np.nan
-        summary["HeartRateStd"] = np.nan
-
-
-    # --------------------------------------------------------
-    # Interval statistics
-    # --------------------------------------------------------
-
-    for column in [
-        "RR_ms",
-        "PR_ms",
-        "QRS_ms",
-        "QT_ms",
-    ]:
-
-        values = (
-            beats_df[column]
-            .dropna()
-        )
-
-        if len(values):
-
-            summary[
-                f"Average{column}"
-            ] = float(
-                values.mean()
-            )
-
-        else:
-
-            summary[
-                f"Average{column}"
-            ] = np.nan
-
-
-    # --------------------------------------------------------
-    # Beat count
-    # --------------------------------------------------------
-
-    summary["TotalHeartBeats"] = int(
-        len(beats_df)
-    )
-
-
-    # --------------------------------------------------------
-    # ECG signal statistics
-    # --------------------------------------------------------
-
-    if len(clean_signal):
-
-        summary["ECG_Min"] = float(
-            np.min(clean_signal)
-        )
-
-        summary["ECG_Max"] = float(
-            np.max(clean_signal)
-        )
-
-        summary["ECG_Mean"] = float(
-            np.mean(clean_signal)
-        )
-
-        summary["ECG_STD"] = float(
-            np.std(clean_signal)
-        )
-
-    else:
-
-        summary["ECG_Min"] = np.nan
-        summary["ECG_Max"] = np.nan
-        summary["ECG_Mean"] = np.nan
-        summary["ECG_STD"] = np.nan
-
-
-    return summary
-
-
-
-# ============================================================
+# ==========================================================
 # ECG Plotting
-# ============================================================
+# ==========================================================
 
 def plot_ecg(
-    clean_signal: np.ndarray,
+    raw_signal: np.ndarray,
     timestamps: np.ndarray,
     beats_df: pd.DataFrame,
     output_file: str,
     title: str = "ECG Analysis",
 ):
     """
-    Generate ECG analysis figure.
+    Plot the ORIGINAL LabScribe ECG waveform.
 
-    Uses robust scaling:
+    Unlike the previous implementation, this function never
+    plots the filtered NeuroKit signal.
 
-        baseline = median(signal)
-
-        amplitude =
-            max(abs(signal-baseline))
-
-        ymin =
-            baseline - amplitude*1.2
-
-        ymax =
-            baseline + amplitude*1.2
-
-
-    This prevents isolated noise spikes from compressing
-    the useful ECG waveform.
+    Rendered as a wide strip-chart, similar to LabScribe's
+    live scrolling display: a fine millisecond-resolution
+    grid (minor gridlines every ECG_MINOR_GRID_SECONDS,
+    labeled major gridlines every ECG_MAJOR_GRID_SECONDS)
+    and a figure width proportional to the recording length.
     """
 
-
-    if len(clean_signal) == 0:
+    if len(raw_signal) == 0:
         return
 
-
-    # --------------------------------------------------------
-    # Convert time axis
-    # --------------------------------------------------------
+    # ------------------------------------------------------
+    # Time axis
+    # ------------------------------------------------------
 
     time_seconds = (
-        timestamps -
-        timestamps[0]
+        timestamps - timestamps[0]
     ) / 1000.0
 
-
-    # --------------------------------------------------------
-    # Robust scaling
-    # --------------------------------------------------------
-
-    baseline = np.median(
-        clean_signal
+    duration_seconds = float(
+        time_seconds[-1]
     )
 
-    amplitude = np.max(
-        np.abs(
-            clean_signal - baseline
-        )
+    # ------------------------------------------------------
+    # Figure sizing
+    #
+    # Width scales with recording duration so the fine
+    # millisecond grid stays legible, capped to keep the
+    # image renderable/usable for very long recordings.
+    # ------------------------------------------------------
+
+    width_inches = (
+        duration_seconds
+        * ECG_PLOT_PIXELS_PER_SECOND
+        / ECG_PLOT_DPI
     )
 
-
-    if amplitude == 0:
-        amplitude = 1
-
-
-    ymin = (
-        baseline -
-        amplitude * 1.2
+    width_inches = max(
+        width_inches,
+        ECG_PLOT_MIN_WIDTH_INCHES,
     )
 
-    ymax = (
-        baseline +
-        amplitude * 1.2
+    width_inches = min(
+        width_inches,
+        ECG_PLOT_MAX_WIDTH_INCHES,
     )
 
+    # ------------------------------------------------------
+    # Figure
+    # ------------------------------------------------------
 
-    # --------------------------------------------------------
-    # Create figure
-    # --------------------------------------------------------
-
-    plt.figure(
-        figsize=(14, 5)
+    fig, ax = plt.subplots(
+        figsize=(
+            width_inches,
+            ECG_PLOT_HEIGHT_INCHES,
+        ),
+        dpi=ECG_PLOT_DPI,
     )
 
-
-    plt.plot(
+    ax.plot(
         time_seconds,
-        clean_signal,
-        linewidth=1,
-        label="ECG",
+        raw_signal,
+        color="black",
+        linewidth=0.8,
+        label="Raw ECG",
     )
 
+    # ------------------------------------------------------
+    # Plot fiducials
+    # ------------------------------------------------------
 
-    # --------------------------------------------------------
-    # Fiducial markers
-    # --------------------------------------------------------
+    marker_info = [
 
-    marker_config = [
+        ("P_Index", "P", "tab:blue"),
+        ("Q_Index", "Q", "tab:orange"),
+        ("R_Index", "R", "red"),
+        ("S_Index", "S", "green"),
+        ("T_Index", "T", "purple"),
 
-        (
-            "P_Index",
-            "P",
-        ),
-
-        (
-            "Q_Index",
-            "Q",
-        ),
-
-        (
-            "R_Index",
-            "R",
-        ),
-
-        (
-            "S_Index",
-            "S",
-        ),
-
-        (
-            "T_Index",
-            "T",
-        ),
     ]
 
-
-    for column, label in marker_config:
+    for column, label, color in marker_info:
 
         if column not in beats_df:
             continue
 
-
         indices = (
+
             beats_df[column]
+
             .dropna()
+
             .astype(int)
+
         )
 
+        if len(indices) == 0:
+            continue
 
         valid = indices[
-            indices < len(clean_signal)
+            indices < len(raw_signal)
         ]
-
 
         if len(valid) == 0:
             continue
 
+        ax.scatter(
 
-        plt.scatter(
             time_seconds[valid],
-            clean_signal[valid],
-            s=25,
+
+            raw_signal[valid],
+
+            s=28,
+
+            color=color,
+
             label=label,
+
+            zorder=5,
+
         )
 
+    # ------------------------------------------------------
+    # LabScribe-style strip-chart grid
+    #
+    # Minor gridlines: fine millisecond-resolution "small
+    # squares". Major gridlines: labeled, once per second.
+    # ------------------------------------------------------
 
-    # --------------------------------------------------------
-    # Formatting
-    # --------------------------------------------------------
-
-    plt.ylim(
-        ymin,
-        ymax,
+    major_locator = MultipleLocator(
+        ECG_MAJOR_GRID_SECONDS
     )
 
-
-    plt.xlabel(
-        "Time (seconds)"
+    minor_locator = MultipleLocator(
+        ECG_MINOR_GRID_SECONDS
     )
 
-    plt.ylabel(
-        "Amplitude"
+    # A fine millisecond-resolution grid over a multi-minute
+    # recording easily produces more ticks than matplotlib's
+    # default safety limit (Locator.MAXTICKS = 1000).
+    major_locator.MAXTICKS = 50_000
+    minor_locator.MAXTICKS = 50_000
+
+    ax.xaxis.set_major_locator(
+        major_locator
     )
 
-
-    plt.title(
-        title
+    ax.xaxis.set_minor_locator(
+        minor_locator
     )
 
-
-    plt.grid(
-        True
+    ax.grid(
+        which="major",
+        axis="x",
+        color="firebrick",
+        alpha=0.5,
+        linewidth=0.7,
     )
 
+    ax.grid(
+        which="minor",
+        axis="x",
+        color="lightcoral",
+        alpha=0.3,
+        linewidth=0.4,
+    )
 
-    plt.legend(
+    ax.grid(
+        which="major",
+        axis="y",
+        color="lightgray",
+        alpha=0.6,
+        linewidth=0.6,
+    )
+
+    ax.set_xlim(
+        time_seconds[0],
+        time_seconds[-1],
+    )
+
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("ECG")
+    ax.set_title(title)
+
+    ax.legend(
         loc="upper right"
     )
 
+    fig.tight_layout()
 
-    plt.tight_layout()
-
-
-    plt.savefig(
+    fig.savefig(
         output_file,
-        dpi=300,
+        dpi=ECG_PLOT_DPI,
     )
 
+    plt.close(fig)
 
-    plt.close()
-
-# ============================================================
-# Validation Helpers
-# ============================================================
-
-def validate_ecg_input(
-    signal,
-    timestamps,
-) -> None:
-    """
-    Validate ECG input arrays.
-
-    Raises
-    ------
-    ValueError
-        If the input data cannot be processed.
-    """
-
-    if signal is None:
-        raise ValueError(
-            "ECG signal is missing."
-        )
-
-    if timestamps is None:
-        raise ValueError(
-            "Timestamp data is missing."
-        )
-
-
-    if len(signal) == 0:
-        raise ValueError(
-            "ECG signal contains no samples."
-        )
-
-
-    if len(signal) != len(timestamps):
-
-        raise ValueError(
-            "ECG signal and timestamps must have equal length."
-        )
-
-
-
-# ============================================================
-# CSV Export Helpers
-# ============================================================
+# ==========================================================
+# CSV Export
+# ==========================================================
 
 def export_ecg_analysis(
     result: ECGAnalysisResult,
     output_file: str,
 ) -> None:
     """
-    Export sample-by-sample ECG analysis.
-
-    Creates:
-
-        *_analysis.csv
+    Export the sample-by-sample ECG dataframe.
     """
 
     result.analysis_df.to_csv(
@@ -1304,17 +1200,12 @@ def export_ecg_analysis(
     )
 
 
-
 def export_ecg_beats(
     result: ECGAnalysisResult,
     output_file: str,
 ) -> None:
     """
-    Export heartbeat table.
-
-    Creates:
-
-        *_beats.csv
+    Export the heartbeat table.
     """
 
     result.beats_df.to_csv(
@@ -1323,168 +1214,43 @@ def export_ecg_beats(
     )
 
 
-
 def export_ecg_summary(
     result: ECGAnalysisResult,
     output_file: str,
 ) -> None:
     """
-    Export ECG summary.
-
-    Creates:
-
-        *_summary.csv
+    Export summary statistics.
     """
 
-    summary_df = pd.DataFrame(
-        [
-            result.summary
-        ]
-    )
-
-
-    summary_df.to_csv(
+    pd.DataFrame(
+        [result.summary]
+    ).to_csv(
         output_file,
         index=False,
     )
 
-
-
-# ============================================================
-# Final ECG Analysis Pipeline
-# ============================================================
-
-def analyze_ecg(
-    signal: np.ndarray | pd.Series,
-    timestamps: np.ndarray | pd.Series,
-    sampling_rate: int = DEFAULT_SAMPLING_RATE,
-) -> ECGAnalysisResult:
-    """
-    Complete ECG processing pipeline.
-
-    This is the main entry point for the LabScribe
-    analysis program.
-
-    Parameters
-    ----------
-    signal:
-        Raw ECG channel.
-
-    timestamps:
-        UnixTime_ms values.
-
-    sampling_rate:
-        ECG sampling frequency.
-
-    Returns
-    -------
-    ECGAnalysisResult
-    """
-
-
-    validate_ecg_input(
-        signal,
-        timestamps,
-    )
-
-
-    signal_array = np.asarray(
-        signal,
-        dtype=float,
-    )
-
-    timestamp_array = np.asarray(
-        timestamps,
-    )
-
-
-    (
-        beats,
-        clean_signal,
-        signals,
-        info,
-
-    ) = detect_ecg_features(
-        signal_array,
-        timestamp_array,
-        sampling_rate,
-    )
-
-
-    beats_df = beats_to_dataframe(
-        beats,
-        clean_signal,
-    )
-
-
-    analysis_df = create_ecg_analysis_dataframe(
-        signal_array,
-        clean_signal,
-        timestamp_array,
-        beats_df,
-    )
-
-
-    summary = compute_ecg_summary(
-        beats_df,
-        clean_signal,
-    )
-
-
-    return ECGAnalysisResult(
-
-        clean_signal=clean_signal,
-
-        analysis_df=analysis_df,
-
-        beats_df=beats_df,
-
-        summary=summary,
-
-        signals=signals,
-
-        info=info,
-    )
-
-
-
-# ============================================================
+# ==========================================================
 # Public API
-# ============================================================
+# ==========================================================
 
 __all__ = [
 
-    # Dataclasses
-
     "ECGBeat",
+
     "ECGAnalysisResult",
 
-
-    # Main analysis
-
     "analyze_ecg",
+
     "detect_ecg_features",
-
-
-    # Statistics
-
-    "compute_ecg_summary",
-
-
-    # Visualization
 
     "plot_ecg",
 
-
-    # Export
+    "compute_ecg_summary",
 
     "export_ecg_analysis",
+
     "export_ecg_beats",
+
     "export_ecg_summary",
 
-
-    # Helpers
-
-    "nearest_wave",
-    "sample_value",
 ]

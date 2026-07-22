@@ -1519,6 +1519,17 @@ def render_balance_video(
     """
     Render synchronized ECG + balance video.
 
+    Plays back in real time. LabScribe data is typically
+    sampled far more densely (e.g. 100 Hz) than the output
+    video's frame rate (config.fps), so a video frame is NOT
+    generated for every data row -- that would make playback
+    run roughly (sample_rate / fps) times slower than the
+    actual recording. Instead, one frame is generated every
+    1000 / config.fps milliseconds of *recorded* time,
+    spanning the full UnixTime_ms range of the recording, and
+    each frame is built from the balance/ECG samples nearest
+    to that frame's real-world timestamp.
+
 
     Required balance columns:
 
@@ -1545,6 +1556,12 @@ def render_balance_video(
     if config is None:
 
         config = VisualizationConfig()
+
+
+    validate_video_inputs(
+        balance_df,
+        ecg_df,
+    )
 
 
 
@@ -1578,6 +1595,13 @@ def render_balance_video(
     )
 
 
+    heart_rate_values = (
+        ecg_df["HeartRate"].values
+        if "HeartRate" in ecg_df.columns
+        else None
+    )
+
+
     writer = create_video_writer(
         output_file,
         config,
@@ -1585,24 +1609,61 @@ def render_balance_video(
 
 
 
-    # --------------------------------------------------------
-    # ECG BUFFER
-    # --------------------------------------------------------
-
-    ecg_buffer = deque(
-        maxlen=1000
-    )
-
-
     balance_times = (
         balance_df["UnixTime_ms"]
-        .values
+        .to_numpy(dtype=float)
     )
 
 
     ecg_times = (
         ecg_df["UnixTime_ms"]
-        .values
+        .to_numpy(dtype=float)
+    )
+
+
+
+    # --------------------------------------------------------
+    # REAL-TIME FRAME SCHEDULE
+    #
+    # One frame every 1000/fps ms of recorded time, spanning
+    # the full recording -- this is what makes playback real
+    # time regardless of how densely the source data was
+    # sampled.
+    # --------------------------------------------------------
+
+    start_time = float(
+        balance_times[0]
+    )
+
+    end_time = float(
+        balance_times[-1]
+    )
+
+    frame_interval_ms = (
+        1000.0
+        /
+        config.fps
+    )
+
+    if end_time <= start_time:
+
+        total_frames = 1
+
+    else:
+
+        total_frames = int(
+            np.floor(
+                (end_time - start_time)
+                / frame_interval_ms
+            )
+        ) + 1
+
+
+    ecg_window = create_ecg_window()
+
+    ecg_window_ms = (
+        ecg_window.window_seconds
+        * 1000.0
     )
 
 
@@ -1611,47 +1672,79 @@ def render_balance_video(
     # RENDER LOOP
     # --------------------------------------------------------
 
-    for _, row in balance_df.iterrows():
+    for frame_index in range(
+        total_frames
+    ):
 
-
-        timestamp = (
-            row["UnixTime_ms"]
+        target_time = (
+            start_time
+            +
+            frame_index * frame_interval_ms
         )
+
+
+        balance_index = find_closest_index(
+
+            balance_times,
+
+            target_time,
+        )
+
+        row = balance_df.iloc[
+            balance_index
+        ]
 
 
         ecg_index = find_closest_index(
 
             ecg_times,
 
-            timestamp,
+            target_time,
         )
 
 
-        ecg_buffer.append(
+        # Trailing window of ECG samples covering the last
+        # ecg_window_ms of recorded time, for the scrolling
+        # ECG waveform display.
 
-            ecg_signal[
-                ecg_index
-            ]
+        window_start_index = np.searchsorted(
 
+            ecg_times,
+
+            target_time - ecg_window_ms,
+
+            side="left",
         )
+
+        window_end_index = ecg_index + 1
+
+        if window_end_index <= window_start_index:
+
+            window_start_index = max(
+                ecg_index - 1,
+                0,
+            )
+
+
+        ecg_values = ecg_signal[
+            window_start_index:window_end_index
+        ].tolist()
 
 
         hr = None
 
+        if heart_rate_values is not None:
 
-        if "HeartRate" in ecg_df.columns:
-
-            hr = ecg_df.iloc[
+            hr = heart_rate_values[
                 ecg_index
-            ]["HeartRate"]
-
+            ]
 
 
         frame = render_frame(
 
             row,
 
-            list(ecg_buffer),
+            ecg_values,
 
             hr,
 

@@ -33,7 +33,11 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
-from .timestamps import generate_unix_timestamps
+from .timestamps import (
+    validate_time_column,
+    build_recording_start,
+    add_unix_timestamp_column,
+)
 
 # ============================================================
 # Constants
@@ -431,41 +435,51 @@ def prepare_labscribe_dataframe(
 
 def add_recording_timestamps(
     df: pd.DataFrame,
-    csv_creation_date,
-    recording_hour: int,
-    am_pm: str,
-    recording_minute: int = 0,
-    recording_second: int = 0,
+    folder_datetime,
 ) -> pd.DataFrame:
     """
     Add UnixTime_ms to a LabScribe dataframe.
 
     Uses timestamps.py.
+
+    Parameters
+    ----------
+    df:
+        LabScribe dataframe containing the Time column.
+
+    folder_datetime:
+        Authoritative wall-clock recording start (year,
+        month, day, hour, minute, second), parsed from the
+        standardized Patient_YYYYMMDD_HHMMSS folder name via
+        timestamps.parse_patient_folder_datetime. Sub-second
+        precision is estimated separately from the
+        TimeOfDay/Time columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataframe with UnixTime_ms added.
     """
 
-    return generate_unix_timestamps(
-        df,
+    validate_time_column(
+        df=df,
+    )
 
-        csv_creation_date,
+    recording_start = build_recording_start(
+        df=df,
+        folder_datetime=folder_datetime,
+    )
 
-        recording_hour,
-
-        am_pm,
-
-        recording_minute,
-
-        recording_second,
+    return add_unix_timestamp_column(
+        df=df,
+        recording_start=recording_start
     )
 
 
 
 def prepare_analysis_dataframe(
     data: LabScribeData,
-    csv_creation_date,
-    recording_hour: int,
-    am_pm: str,
-    recording_minute: int = 0,
-    recording_second: int = 0,
+    folder_datetime,
 ) -> pd.DataFrame:
     """
     Complete LabScribe preparation pipeline.
@@ -497,15 +511,7 @@ def prepare_analysis_dataframe(
     df = add_recording_timestamps(
         df,
 
-        csv_creation_date,
-
-        recording_hour,
-
-        am_pm,
-
-        recording_minute,
-
-        recording_second,
+        folder_datetime,
     )
 
 
