@@ -8,19 +8,18 @@ from tkinter import filedialog
 import matplotlib.pyplot as plt
 import csv
 
-output_file = "left_pupil.csv"
-generate_csv = True
-
+# -----------------------------
+# Pupil Detection Configuration Settings
+# -----------------------------
 RELAXED_THRESHOLD = 40
 MEDIUM_THRESHOLD = 50
 STRICT_THRESHOLD = 60 
-# SQUARE_SIZE = 150
-
-# RELAXED_THRESHOLD = 19
-# MEDIUM_THRESHOLD = 25
-# STRICT_THRESHOLD = 31
-
 SQUARE_SIZE = 200
+
+# -----------------------------
+# Blinking Detection Tolerance
+# -----------------------------
+CENTER_TOLERANCE = 0.40  # Percentage value 0.0 - 1.0; Lower values are more sensitive
 
 # Crop the image to maintain a specific aspect ratio (width:height) before resizing. 
 def crop_to_aspect_ratio(image, width=640, height=480):
@@ -418,10 +417,18 @@ def process_frame(frame):
     return final_rotated_rect
 
 # Loads a video and finds the pupil in each frame
-def process_video(video_path, input_method):
+# video_path: path to the input .mp4
+# output_csv_path: full path (including filename) to write the per-frame pupil CSV to
+# input_method: 1 for video file, 2 for webcam
+# show_window: whether to show the live cv2 preview window
+# save_annotated_video: whether to also save an annotated debug .mp4 alongside the CSV
+def process_video(video_path, output_csv_path, input_method=1, show_window=True, save_annotated_video=False):
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for MP4 format
-    out = cv2.VideoWriter('C:/Storage/Source Videos/output_video.mp4', fourcc, 30.0, (640, 480))  # Output video filename, codec, frame rate, and frame size
+    out = None
+    if save_annotated_video:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for MP4 format
+        annotated_path = os.path.join(os.path.dirname(output_csv_path), "annotated_output.mp4")
+        out = cv2.VideoWriter(annotated_path, fourcc, 30.0, (640, 480))  # Output video filename, codec, frame rate, and frame size
 
     if input_method == 1:
         cap = cv2.VideoCapture(video_path)
@@ -433,33 +440,33 @@ def process_video(video_path, input_method):
         return
 
     if not cap.isOpened():
-        print("Error: Could not open video.")
+        print(f"Error: Could not open video: {video_path}")
         return
     
     debug_mode_on = False
     
     temp_center = (0,0)
 
-    if generate_csv:
-        csv_file = open(output_file, "w", newline="")
-        csv_writer = csv.writer(csv_file)
+    csv_file = open(output_csv_path, "w", newline="")
+    csv_writer = csv.writer(csv_file)
 
-        csv_writer.writerow([
-            "Frame",
-            "Time_ms",
-            "CenterX",
-            "CenterY",
-            "MajorDiameter",
-            "MinorDiameter",
-            "Area",
-            "Angle"
-        ])
+    csv_writer.writerow([
+        "Frame",
+        "Time_ms",
+        "CenterX",
+        "CenterY",
+        "MajorDiameter",
+        "MinorDiameter",
+        "Area",
+        "Angle",
+        "isEyeClosed"
+    ])
 
-        frame_number = 0
-        fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_number = 0
+    fps = cap.get(cv2.CAP_PROP_FPS)
 
-        if fps <= 0:
-            fps = 30
+    if fps <= 0:
+        fps = 30
 
     while True:
         ret, frame = cap.read()
@@ -471,6 +478,23 @@ def process_video(video_path, input_method):
 
         #find the darkest point
         darkest_point = get_darkest_area(frame)
+
+        # Eyes-closed detection: when the eye is closed, the darkest region in
+        # frame is usually the eyelashes/eyelid margin rather than the pupil,
+        # which sits away from the center of the frame. Reuses SQUARE_SIZE -
+        # the same constant already used elsewhere as the expected pupil
+        # region size - as the "near the middle" distance threshold, and the
+        # frame's own (already cropped/resized) dimensions for the center.
+        frame_height, frame_width = frame.shape[:2]
+        frame_center_x = frame.shape[1] // 2
+        frame_center_y = frame.shape[0] // 2
+        distance_from_center = math.hypot(darkest_point[0] - frame_center_x, darkest_point[1] - frame_center_y)
+        # Maximum possible distance from center to a corner
+        max_distance = math.hypot(frame_width / 2, frame_height / 2)
+
+        # Eye is considered closed if the darkest point is more than
+        # 40% of the way from the center toward a corner.
+        is_eye_closed = distance_from_center > (CENTER_TOLERANCE * max_distance)
 
         if debug_mode_on:
             darkest_image = frame.copy()
@@ -493,29 +517,42 @@ def process_video(video_path, input_method):
         thresholded_image_relaxed = mask_outside_square(thresholded_image_relaxed, darkest_point, SQUARE_SIZE)
         
         #take the three images thresholded at different levels and process them
-        pupil_rotated_rect = process_frames(thresholded_image_strict, thresholded_image_medium, thresholded_image_relaxed, frame, gray_frame, darkest_point, debug_mode_on, True)
+        pupil_rotated_rect = process_frames(thresholded_image_strict, thresholded_image_medium, thresholded_image_relaxed, frame, gray_frame, darkest_point, debug_mode_on, show_window)
 
-        if generate_csv:
-            ((cx, cy), (w, h), angle) = pupil_rotated_rect
+        ((cx, cy), (w, h), angle) = pupil_rotated_rect
 
-            # Skip frames where no ellipse was found
-            if w > 0 and h > 0:
-                area = math.pi * (w / 2) * (h / 2)
+        time_ms = frame_number * 1000.0 / fps
 
-                time_ms = frame_number * 1000.0 / fps
+        # Frames with no fittable ellipse (commonly closed-eye frames) still
+        # get a row now, so isEyeClosed is never silently dropped - the
+        # ellipse fields are just left blank when there's nothing to report.
+        if w > 0 and h > 0:
+            area = math.pi * (w / 2) * (h / 2)
+            csv_writer.writerow([
+                frame_number,
+                round(time_ms, 3),
+                round(cx, 2),
+                round(cy, 2),
+                round(w, 2),
+                round(h, 2),
+                round(area, 2),
+                round(angle, 2),
+                is_eye_closed
+            ])
+        else:
+            csv_writer.writerow([
+                frame_number,
+                round(time_ms, 3),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                is_eye_closed
+            ])
 
-                csv_writer.writerow([
-                    frame_number,
-                    round(time_ms, 3),
-                    round(cx, 2),
-                    round(cy, 2),
-                    round(w, 2),
-                    round(h, 2),
-                    round(area, 2),
-                    round(angle, 2)
-                ])
-
-            frame_number += 1
+        frame_number += 1
         
         key = cv2.waitKey(1) & 0xFF
         
@@ -525,7 +562,8 @@ def process_video(video_path, input_method):
             debug_mode_on = False
             cv2.destroyAllWindows()
         if key == ord('q'):  # Press 'q' to quit
-            out.release()
+            if out is not None:
+                out.release()
             break   
         elif key == ord(' '):  # Press spacebar to start/stop
             while True:
@@ -535,27 +573,94 @@ def process_video(video_path, input_method):
                 elif key == ord('q'):  # Press 'q' to quit
                     break
 
-    if generate_csv:
-        csv_file.close()
+    csv_file.close()
     cap.release()
-    out.release()
+    if out is not None:
+        out.release()
     cv2.destroyAllWindows()
 
-#Prompts the user to select a video file if the hardcoded path is not found
-#This is just for my debugging convenience :)
+    print(f"  -> saved {output_csv_path}")
+
+
+#Prompts the user to select a single video file.
+#Kept around for quick manual debugging of one video at a time.
 def select_video():
     root = tk.Tk()
     root.withdraw()  # Hide the main window
-    video_path = 'C:/Google Drive/Eye Tracking/fulleyetest.mp4'
-    if not os.path.exists(video_path):
-        print("No file found at hardcoded path. Please select a video file.")
-        video_path = filedialog.askopenfilename(title="Select Video File", filetypes=[("Video Files", "*.mp4;*.avi")])
-        if not video_path:
-            print("No file selected. Exiting.")
-            return
-            
+    video_path = filedialog.askopenfilename(title="Select Video File", filetypes=[("Video Files", "*.mp4;*.avi")])
+    if not video_path:
+        print("No file selected. Exiting.")
+        return
+
+    csv_path = os.path.join(os.path.dirname(video_path), "pupil.csv")
     #second parameter is 1 for video 2 for webcam
-    process_video(video_path, 1)
+    process_video(video_path, csv_path, input_method=1)
+
+
+# Prompts for a top-level "Patient" directory, then walks its subfolders
+# looking for left_eye_cropped.mp4 / right_eye_cropped.mp4.
+# Returns a list of (video_path, output_csv_path, eye_label) tuples.
+def find_patient_eye_videos(patient_dir):
+    jobs = []
+    for root, dirs, files in os.walk(patient_dir):
+        if os.path.normpath(root) == os.path.normpath(patient_dir):
+            continue  # only look inside subfolders, not loose files in the patient dir itself
+
+        for fname in files:
+            lower = fname.lower()
+            if lower == "left_eye_cropped.mp4":
+                jobs.append((os.path.join(root, fname), os.path.join(root, "left_pupil.csv"), "left"))
+            elif lower == "right_eye_cropped.mp4":
+                jobs.append((os.path.join(root, fname), os.path.join(root, "right_pupil.csv"), "right"))
+
+    return jobs
+
+
+def select_patient_directory():
+    root = tk.Tk()
+    root.withdraw()
+    patient_dir = filedialog.askdirectory(title="Select Patient Directory")
+    return patient_dir
+
+
+# Runs every discovered video through the (unmodified) pupil-detection pipeline
+# and writes each result to left_pupil.csv / right_pupil.csv next to its video.
+#
+# Videos are processed one at a time, in sequence, rather than in parallel.
+# This is deliberate for accuracy/reliability, not just simplicity:
+#   - OpenCV already parallelizes its own per-frame ops (dilate, cvtColor, etc.)
+#     internally across CPU cores/threads. Running several videos at once with
+#     Python threads or multiprocessing would have those internal thread pools
+#     compete with each other for the same cores, which tends to slow things
+#     down rather than speed them up, and can make per-video timing unpredictable.
+#   - The pipeline opens live cv2.imshow debug windows and reads keyboard input
+#     via cv2.waitKey() inside the loop. OpenCV's HighGUI window/event handling
+#     is not safe to run from multiple threads/processes simultaneously, so
+#     doing that risks window conflicts.
+# A strict queue keeps every video's frame-by-frame detection behaving exactly
+# like running this script once per video by hand.
+def run_batch(show_window=True):
+    patient_dir = select_patient_directory()
+    if not patient_dir:
+        print("No directory selected. Exiting.")
+        return
+
+    jobs = find_patient_eye_videos(patient_dir)
+
+    if not jobs:
+        print(f"No left_eye_cropped.mp4 or right_eye_cropped.mp4 files found in subfolders of: {patient_dir}")
+        return
+
+    print(f"Found {len(jobs)} video(s) to process:")
+    for video_path, csv_path, eye_label in jobs:
+        print(f"  [{eye_label}] {video_path}")
+
+    for video_path, csv_path, eye_label in jobs:
+        print(f"\nProcessing {eye_label} eye video: {video_path}")
+        process_video(video_path, csv_path, input_method=1, show_window=show_window)
+
+    print("\nDone. Processed all videos.")
+
 
 if __name__ == "__main__":
-    select_video()
+    run_batch()

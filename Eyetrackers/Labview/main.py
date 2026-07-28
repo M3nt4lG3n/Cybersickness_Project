@@ -69,6 +69,8 @@ from tkinter import (
 
 from Eyetrackers.Labview.labscribe_io import (
 
+    convert_labview_export_to_csv,
+
     load_labscribe_csv,
 
     prepare_analysis_dataframe,
@@ -113,6 +115,17 @@ from .visualization import (
 )
 
 
+from .unity_visualization import (
+
+    load_unity_csv,
+
+    render_unity_video,
+
+    UnityVisualizationConfig,
+
+)
+
+
 from . import merger
 
 
@@ -137,6 +150,17 @@ class AnalysisConfig:
 
     video_config: VisualizationConfig = field(
         default_factory=VisualizationConfig
+    )
+
+    # Unity biometrics CSV (PosX/Y/Z, QuatX/Y/Z/W, ...).
+    # Optional: if not provided, the position/rotation video
+    # is skipped regardless of generate_unity_video.
+    unity_csv: Path | None = None
+
+    generate_unity_video: bool = True
+
+    unity_video_config: UnityVisualizationConfig = field(
+        default_factory=UnityVisualizationConfig
     )
 
     run_merge: bool = True
@@ -202,6 +226,12 @@ def create_output_paths(
             config.output_directory
             /
             f"{stem}_balance.mp4",
+
+
+        "unity_video":
+            config.output_directory
+            /
+            f"{stem}_unity.mp4",
     }
 
 # ============================================================
@@ -565,6 +595,33 @@ def run_analysis(
 
 
     # --------------------------------------------------------
+    # Unity position/rotation video
+    # --------------------------------------------------------
+
+    if config.generate_unity_video and config.unity_csv is not None:
+
+        generate_unity_position_video(
+
+            config,
+
+            paths["unity_video"],
+        )
+
+    elif config.generate_unity_video and config.unity_csv is None:
+
+        print(
+            "Unity video skipped (no Unity biometrics CSV "
+            "provided)."
+        )
+
+    else:
+
+        print(
+            "Unity video generation skipped."
+        )
+
+
+    # --------------------------------------------------------
     # Merge with Unity biometrics + eye tracking data
     # --------------------------------------------------------
 
@@ -640,6 +697,52 @@ def generate_balance_video(
     )
 
 
+def generate_unity_position_video(
+    config: AnalysisConfig,
+    output_file: Path,
+) -> None:
+    """
+    Generate the Unity position/rotation video: a sphere that
+    translates and rotates through 3D space according to the
+    recorded headset position and orientation.
+    """
+
+    print(
+        "Loading Unity biometrics CSV..."
+    )
+
+
+    unity_df = load_unity_csv(
+        config.unity_csv
+    )
+
+
+    print(
+        f"Loaded {len(unity_df)} Unity samples."
+    )
+
+
+    print(
+        "Rendering Unity position/rotation video..."
+    )
+
+
+    render_unity_video(
+
+        unity_df,
+
+        str(output_file),
+
+        config.unity_video_config,
+
+    )
+
+
+    print(
+        "Unity video complete."
+    )
+
+
 
 # ============================================================
 # Tkinter User Interface
@@ -662,13 +765,21 @@ def get_user_config() -> AnalysisConfig | None:
 
     csv_file = filedialog.askopenfilename(
 
-        title="Select LabScribe CSV",
+        title="Select LabScribe File",
 
         filetypes=[
             (
+                "LabScribe Files",
+                "*.csv *.xls",
+            ),
+            (
                 "CSV Files",
                 "*.csv",
-            )
+            ),
+            (
+                "Raw LabVIEW Export",
+                "*.xls",
+            ),
         ],
     )
 
@@ -676,6 +787,33 @@ def get_user_config() -> AnalysisConfig | None:
     if not csv_file:
 
         return None
+
+
+    csv_path = Path(csv_file)
+
+
+    # --------------------------------------------------------
+    # Raw LabVIEW export conversion
+    #
+    # LabScribe exports are saved with a ".xls" extension but
+    # are actually tab-delimited text files. Convert to a
+    # proper CSV up front so the rest of the pipeline can keep
+    # using its existing CSV-based architecture unchanged.
+    # --------------------------------------------------------
+
+    if csv_path.suffix.lower() == ".xls":
+
+        print(
+            f"Converting raw LabVIEW export to CSV: {csv_path.name}"
+        )
+
+        csv_path = convert_labview_export_to_csv(
+            csv_path
+        )
+
+        print(
+            f"  Saved: {csv_path}"
+        )
 
 
 
@@ -687,7 +825,7 @@ def get_user_config() -> AnalysisConfig | None:
     try:
 
         folder_datetime = parse_patient_folder_datetime(
-            Path(csv_file).parent.name
+            csv_path.parent.name
         )
 
     except ValueError as error:
@@ -710,7 +848,7 @@ def get_user_config() -> AnalysisConfig | None:
     # Output folder
     # --------------------------------------------------------
 
-    output_directory = Path(csv_file).parent
+    output_directory = csv_path.parent
 
     # --------------------------------------------------------
     # Video option
@@ -725,6 +863,47 @@ def get_user_config() -> AnalysisConfig | None:
     )
 
 
+    # --------------------------------------------------------
+    # Unity position/rotation video option
+    # --------------------------------------------------------
+
+    generate_unity_video = messagebox.askyesno(
+
+        "Generate Unity Video",
+
+        "Generate Unity position/rotation video?",
+
+    )
+
+
+    unity_csv = None
+
+
+    if generate_unity_video:
+
+        unity_csv_file = filedialog.askopenfilename(
+
+            title="Select Unity Biometrics CSV",
+
+            filetypes=[
+                (
+                    "CSV Files",
+                    "*.csv",
+                )
+            ],
+        )
+
+        if unity_csv_file:
+
+            unity_csv = Path(unity_csv_file)
+
+        else:
+
+            # User cancelled the file picker: skip the Unity
+            # video rather than failing the whole run.
+            generate_unity_video = False
+
+
 
     root.destroy()
 
@@ -732,13 +911,17 @@ def get_user_config() -> AnalysisConfig | None:
 
     return AnalysisConfig(
 
-        input_csv=Path(csv_file),
+        input_csv=csv_path,
 
         output_directory=output_directory,
 
         folder_datetime=folder_datetime,
 
         generate_video=generate_video,
+
+        unity_csv=unity_csv,
+
+        generate_unity_video=generate_unity_video,
 
     )
 

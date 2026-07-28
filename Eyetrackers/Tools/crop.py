@@ -5,17 +5,10 @@ from tkinter import Tk, filedialog
 # Crop Settings
 # -----------------------------
 
-# Right
 x = 119
 y = 79
 crop_width = 109
 crop_height = 138
-
-# Left
-# x = 130
-# y = 70
-# crop_width = 109
-# crop_height = 138
 
 # -----------------------------
 # Border Settings

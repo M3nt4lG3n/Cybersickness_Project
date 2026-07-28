@@ -398,15 +398,6 @@ def detect_ecg_features(
         dtype=int,
     )
 
-    print(f"Detected {len(r_peaks)} R peaks")
-
-    if len(r_peaks):
-
-        print(
-            "First R peaks:",
-            r_peaks[:10]
-        )
-
     if len(r_peaks) < 2:
 
         return (

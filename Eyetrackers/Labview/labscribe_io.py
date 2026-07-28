@@ -172,6 +172,81 @@ def validate_required_columns(
         )
     
 # ============================================================
+# Raw LabVIEW Export Conversion
+# ============================================================
+
+def convert_labview_export_to_csv(
+    file_path: str | Path,
+    output_path: str | Path | None = None,
+) -> Path:
+    """
+    Convert a raw LabVIEW/LabScribe export to a proper CSV.
+
+    LabScribe exports are saved with a ".xls" extension, but
+    they are actually tab-delimited text files, not real Excel
+    workbooks. This reads the raw export and re-writes it as a
+    standard comma-delimited CSV, so the rest of the pipeline
+    (load_labscribe_csv, pandas.read_csv defaults, etc.) can
+    keep working unchanged.
+
+    Parameters
+    ----------
+    file_path:
+        Path to the raw LabVIEW export (typically ending in
+        .xls, despite being tab-delimited text).
+
+    output_path:
+        Where to write the converted CSV.
+
+        Defaults to the same file with its extension replaced
+        by ".csv" (e.g. "labview.xls" -> "labview.csv").
+
+    Returns
+    -------
+    Path
+        Path to the converted CSV file.
+    """
+
+    path = validate_file_exists(
+        file_path
+    )
+
+
+    if output_path is None:
+
+        output_path = path.with_suffix(
+            ".csv"
+        )
+
+    else:
+
+        output_path = Path(
+            output_path
+        )
+
+
+    dataframe = pd.read_csv(
+        path,
+        sep="\t",
+    )
+
+
+    validate_dataframe(
+        dataframe
+    )
+
+
+    dataframe.to_csv(
+        output_path,
+        index=False,
+    )
+
+
+    return output_path
+
+
+
+# ============================================================
 # CSV Loading
 # ============================================================
 
@@ -643,6 +718,11 @@ __all__ = [
     "LabScribeMetadata",
 
     "LabScribeData",
+
+
+    # Conversion
+
+    "convert_labview_export_to_csv",
 
 
     # Loading
