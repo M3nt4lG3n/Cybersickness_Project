@@ -4,9 +4,19 @@ import random
 import math
 import tkinter as tk
 import os
+import sys
+from pathlib import Path
 from tkinter import filedialog
 import matplotlib.pyplot as plt
 import csv
+
+# merger.py (Eyetrackers/Data_Processing/merger.py) already owns the logic
+# for turning a pupil CSV + eye CSV into the "readings" CSVs
+# (build_eye_readings -> left_eye_readings.csv / right_eye_readings.csv).
+# It's imported here rather than reimplemented so both stay in sync.
+# Assumes merger.py sits alongside this script; adjust this path if not.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from Eyetrackers.Data_Processing.merger import build_eye_readings, MergeInputPaths
 
 # -----------------------------
 # Pupil Detection Configuration Settings
@@ -623,6 +633,34 @@ def select_patient_directory():
     return patient_dir
 
 
+# Reuses merger.py's build_eye_readings() to (re)generate a session
+# folder's left_eye_readings.csv / right_eye_readings.csv - referred to
+# elsewhere as the "left/right pupil readings" files - now that this
+# script has (re)written its left_pupil.csv / right_pupil.csv.
+#
+# build_eye_readings() merges each side's *_pupil.csv against its
+# matching *_eye.csv (expected to already exist in the same folder,
+# written by the eye-tracker's own eye-video pipeline) and writes the
+# merged result back out to that same folder. A side is silently skipped
+# if either of its input files is missing.
+def build_pupil_readings_for_session(session_dir):
+    session_dir = Path(session_dir)
+
+    # MergeInputPaths requires timestamped_csv/analysis_csv/beats_csv,
+    # but build_eye_readings() never reads them - only the
+    # *_pupil_csv / *_eye_csv paths it derives from input_dir matter
+    # here. These are unused placeholders to satisfy the dataclass.
+    merge_paths = MergeInputPaths(
+        input_dir=session_dir,
+        timestamped_csv=session_dir / "_unused_timestamped.csv",
+        analysis_csv=session_dir / "_unused_analysis.csv",
+        beats_csv=session_dir / "_unused_beats.csv",
+    )
+
+    print(f"  Updating pupil readings files in: {session_dir}")
+    return build_eye_readings(merge_paths, output_directory=session_dir)
+
+
 # Runs every discovered video through the (unmodified) pupil-detection pipeline
 # and writes each result to left_pupil.csv / right_pupil.csv next to its video.
 #
@@ -658,6 +696,13 @@ def run_batch(show_window=True):
     for video_path, csv_path, eye_label in jobs:
         print(f"\nProcessing {eye_label} eye video: {video_path}")
         process_video(video_path, csv_path, input_method=1, show_window=show_window)
+
+    # Now that every session folder's left_pupil.csv / right_pupil.csv
+    # reflects this run, refresh that folder's pupil readings CSVs too.
+    session_dirs = sorted({os.path.dirname(csv_path) for _, csv_path, _ in jobs})
+    print(f"\nUpdating pupil readings files for {len(session_dirs)} session folder(s)...")
+    for session_dir in session_dirs:
+        build_pupil_readings_for_session(session_dir)
 
     print("\nDone. Processed all videos.")
 

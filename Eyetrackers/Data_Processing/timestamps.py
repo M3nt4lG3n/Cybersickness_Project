@@ -210,41 +210,49 @@ def unix_ms_to_datetime(
 # Time Parsing
 # ==========================================================
 
-def parse_time_of_day(
-    value: str,
-) -> float:
+def parse_time_of_day(value: str) -> float:
     """
     Convert a LabScribe TimeOfDay value into seconds.
 
-    Example
-    -------
-    33:57.1
+    Supported formats
+    -----------------
+    MM:SS.s
+    HH:MM:SS.sss
 
-    Returns
-    -------
-    2037.1
+    Examples
+    --------
+    33:57.1      -> 2037.1
+    12:27:16.942 -> 44836.942
     """
 
     value = str(value).strip()
 
+    parts = value.split(":")
+
     try:
 
-        minute_str, second_str = value.split(":")
+        if len(parts) == 2:
+            # MM:SS.s
+            minutes = int(parts[0])
+            seconds = float(parts[1])
 
-        minute = int(minute_str)
+            return minutes * 60 + seconds
 
-        second = float(second_str)
+        elif len(parts) == 3:
+            # HH:MM:SS.sss
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = float(parts[2])
+
+            return hours * 3600 + minutes * 60 + seconds
+
+        else:
+            raise ValueError()
 
     except Exception as error:
-
         raise ValueError(
             f"Invalid TimeOfDay value '{value}'."
         ) from error
-
-    return (
-        minute * 60.0
-        + second
-    )
 
 
 # ==========================================================

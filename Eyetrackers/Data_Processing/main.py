@@ -67,7 +67,7 @@ from tkinter import (
 # Internal Imports
 # ============================================================
 
-from Eyetrackers.Labview.labscribe_io import (
+from .labscribe_io import (
 
     convert_labview_export_to_csv,
 
@@ -84,7 +84,7 @@ from Eyetrackers.Labview.labscribe_io import (
 )
 
 
-from Eyetrackers.Labview.timestamps import (
+from .timestamps import (
 
     parse_patient_folder_datetime,
 
@@ -745,52 +745,238 @@ def generate_unity_position_video(
 
 
 # ============================================================
+# Session Discovery
+#
+# A "session folder" is a standardized Patient_YYYYMMDD_HHMMSS
+# folder (see timestamps.parse_patient_folder_datetime). Batch
+# mode processes every session subfolder inside a selected
+# super-folder (e.g. "Patient_1"); individual mode processes
+# exactly one session folder selected directly.
+# ============================================================
+
+def find_session_subfolders(super_folder: Path) -> list[Path]:
+    """
+    Find every immediate subfolder of `super_folder` whose name
+    matches the standardized Patient_YYYYMMDD_HHMMSS pattern.
+    """
+
+    sessions = []
+
+    for entry in sorted(super_folder.iterdir()):
+
+        if not entry.is_dir():
+            continue
+
+        try:
+            parse_patient_folder_datetime(entry.name)
+        except ValueError:
+            continue
+
+        sessions.append(entry)
+
+    return sessions
+
+
+# ============================================================
+# LabScribe .xls Discovery
+#
+# Each session folder is expected to contain a raw LabVIEW/
+# LabScribe export (e.g. "Patient_1_0.1.xls"). If it can't be
+# found, the user gets one chance to fix it and retry before
+# the run is aborted.
+# ============================================================
+
+def find_xls_file(session_dir: Path) -> Path | None:
+    """
+    Find a .xls file directly inside `session_dir`.
+
+    If more than one is found, the alphabetically-first match
+    is used and a note is printed.
+    """
+
+    matches = sorted(
+        entry
+        for entry in session_dir.iterdir()
+        if entry.is_file() and entry.suffix.lower() == ".xls"
+    )
+
+    if len(matches) > 1:
+
+        print(
+            f"  Note: multiple .xls files found in {session_dir}; "
+            f"using {matches[0].name}."
+        )
+
+    return matches[0] if matches else None
+
+
+def locate_xls_with_retry(
+    session_dir: Path,
+    max_retries: int = 1,
+) -> Path | None:
+    """
+    Search `session_dir` for a .xls file, giving the user one
+    retry (via a Tkinter Retry/Cancel prompt) if it isn't found
+    the first time. Returns None - meaning the caller should
+    stop - if it's still missing after the retry, or if the
+    user cancels.
+    """
+
+    attempt = 0
+
+    while True:
+
+        xls_path = find_xls_file(session_dir)
+
+        if xls_path is not None:
+            return xls_path
+
+        if attempt >= max_retries:
+
+            print(
+                f"Stopping: no .xls file found in {session_dir} "
+                "after retry."
+            )
+
+            return None
+
+        attempt += 1
+
+        retry = messagebox.askretrycancel(
+
+            "LabScribe File Not Found",
+
+            f".xls file not found in ./{session_dir.name}. Make "
+            "sure the file is named properly and present in the "
+            "folder.",
+
+        )
+
+        if not retry:
+
+            print(
+                f"Stopping: .xls search cancelled for {session_dir}."
+            )
+
+            return None
+
+        # Loop back and search again.
+
+
+# ============================================================
+# Unity Biometrics CSV Discovery
+#
+# Unlike the old flow (which asked the user to browse for it),
+# unity_biometrics.csv is expected to already live directly in
+# the session folder alongside the LabScribe export.
+# ============================================================
+
+def find_unity_csv(session_dir: Path) -> Path | None:
+    """
+    Look for unity_biometrics.csv directly inside `session_dir`.
+    """
+
+    candidate = session_dir / "unity_biometrics.csv"
+
+    return candidate if candidate.exists() else None
+
+
+# ============================================================
 # Tkinter User Interface
 # ============================================================
 
-def get_user_config() -> AnalysisConfig | None:
+def ask_batch_or_individual(root: tk.Tk) -> str | None:
     """
-    Collect analysis settings using Tkinter.
+    Ask whether to run a batch (multiple sessions) or an
+    individual (single session) analysis.
+
+    Returns "batch", "individual", or None if the dialog was
+    closed without a choice.
     """
 
-    root = tk.Tk()
+    choice = {"value": None}
 
-    root.withdraw()
+    dialog = tk.Toplevel(root)
+    dialog.title("Analysis Mode")
+    dialog.resizable(False, False)
+    dialog.grab_set()
+
+    tk.Label(
+        dialog,
+        text=(
+            "Run a batch analysis (a super-folder containing "
+            "multiple\nPatient_YYYYMMDD_HHMMSS session folders) or "
+            "an\nindividual analysis (a single session folder)?"
+        ),
+        padx=20,
+        pady=20,
+        justify="left",
+    ).pack()
+
+    button_frame = tk.Frame(dialog)
+    button_frame.pack(pady=(0, 15))
+
+    def pick(value):
+        choice["value"] = value
+        dialog.destroy()
+
+    tk.Button(
+        button_frame,
+        text="Batch",
+        width=12,
+        command=lambda: pick("batch"),
+    ).pack(side="left", padx=10)
+
+    tk.Button(
+        button_frame,
+        text="Individual",
+        width=12,
+        command=lambda: pick("individual"),
+    ).pack(side="left", padx=10)
+
+    dialog.protocol("WM_DELETE_WINDOW", lambda: pick(None))
+
+    root.wait_window(dialog)
+
+    return choice["value"]
 
 
+def get_run_options() -> tuple[bool, bool]:
+    """
+    Ask the balance-video and Unity-video yes/no questions.
+    Reused as-is from the previous single-file flow.
+    """
 
-    # --------------------------------------------------------
-    # Select CSV
-    # --------------------------------------------------------
+    generate_video = messagebox.askyesno(
 
-    csv_file = filedialog.askopenfilename(
+        "Generate Video",
 
-        title="Select LabScribe File",
+        "Generate balance board video?",
 
-        filetypes=[
-            (
-                "LabScribe Files",
-                "*.csv *.xls",
-            ),
-            (
-                "CSV Files",
-                "*.csv",
-            ),
-            (
-                "Raw LabVIEW Export",
-                "*.xls",
-            ),
-        ],
     )
 
+    generate_unity_video = messagebox.askyesno(
 
-    if not csv_file:
+        "Generate Unity Video",
 
-        return None
+        "Generate Unity position/rotation video?",
+
+    )
+
+    return generate_video, generate_unity_video
 
 
-    csv_path = Path(csv_file)
-
+def build_analysis_config(
+    session_dir: Path,
+    xls_path: Path,
+    generate_video: bool,
+    generate_unity_video: bool,
+) -> AnalysisConfig | None:
+    """
+    Convert a session folder's .xls export and assemble its
+    AnalysisConfig. Returns None (after showing an error) if
+    the folder name can't be parsed as a recording date/time.
+    """
 
     # --------------------------------------------------------
     # Raw LabVIEW export conversion
@@ -801,31 +987,27 @@ def get_user_config() -> AnalysisConfig | None:
     # using its existing CSV-based architecture unchanged.
     # --------------------------------------------------------
 
-    if csv_path.suffix.lower() == ".xls":
+    print(
+        f"Converting raw LabVIEW export to CSV: {xls_path.name}"
+    )
 
-        print(
-            f"Converting raw LabVIEW export to CSV: {csv_path.name}"
-        )
+    csv_path = convert_labview_export_to_csv(
+        xls_path
+    )
 
-        csv_path = convert_labview_export_to_csv(
-            csv_path
-        )
-
-        print(
-            f"  Saved: {csv_path}"
-        )
-
-
+    print(
+        f"  Saved: {csv_path}"
+    )
 
     # --------------------------------------------------------
-    # Recording date/time (from the standardized parent
+    # Recording date/time (from the standardized session
     # folder name: Patient_YearMonthDay_HourMinuteSecond)
     # --------------------------------------------------------
 
     try:
 
         folder_datetime = parse_patient_folder_datetime(
-            csv_path.parent.name
+            session_dir.name
         )
 
     except ValueError as error:
@@ -835,85 +1017,40 @@ def get_user_config() -> AnalysisConfig | None:
             "Invalid Patient Folder",
 
             "Could not read the recording date/time from the "
-            "parent folder name.\n\n"
+            "session folder name.\n\n"
             f"{error}",
 
         )
 
         return None
 
-
-
     # --------------------------------------------------------
-    # Output folder
+    # Unity biometrics CSV - auto-discovered rather than
+    # browsed for. If missing, treat this session as if the
+    # user had said "no" to the Unity video question.
     # --------------------------------------------------------
-
-    output_directory = csv_path.parent
-
-    # --------------------------------------------------------
-    # Video option
-    # --------------------------------------------------------
-
-    generate_video = messagebox.askyesno(
-
-        "Generate Video",
-
-        "Generate balance board video?",
-
-    )
-
-
-    # --------------------------------------------------------
-    # Unity position/rotation video option
-    # --------------------------------------------------------
-
-    generate_unity_video = messagebox.askyesno(
-
-        "Generate Unity Video",
-
-        "Generate Unity position/rotation video?",
-
-    )
-
 
     unity_csv = None
-
+    session_generate_unity_video = generate_unity_video
 
     if generate_unity_video:
 
-        unity_csv_file = filedialog.askopenfilename(
+        unity_csv = find_unity_csv(session_dir)
 
-            title="Select Unity Biometrics CSV",
+        if unity_csv is None:
 
-            filetypes=[
-                (
-                    "CSV Files",
-                    "*.csv",
-                )
-            ],
-        )
+            print(
+                f"  unity_biometrics.csv not found in {session_dir}; "
+                "skipping Unity video for this session."
+            )
 
-        if unity_csv_file:
-
-            unity_csv = Path(unity_csv_file)
-
-        else:
-
-            # User cancelled the file picker: skip the Unity
-            # video rather than failing the whole run.
-            generate_unity_video = False
-
-
-
-    root.destroy()
-
-
+            session_generate_unity_video = False
 
     return AnalysisConfig(
 
         input_csv=csv_path,
 
-        output_directory=output_directory,
+        output_directory=session_dir,
 
         folder_datetime=folder_datetime,
 
@@ -921,9 +1058,156 @@ def get_user_config() -> AnalysisConfig | None:
 
         unity_csv=unity_csv,
 
-        generate_unity_video=generate_unity_video,
+        generate_unity_video=session_generate_unity_video,
 
     )
+
+
+def get_batch_configs() -> list[AnalysisConfig]:
+    """
+    Run the full Tkinter selection flow and return one
+    AnalysisConfig per session to process (one for individual
+    mode, one per discovered session subfolder for batch mode).
+
+    Returns an empty list if the user cancels at any point, or
+    if a required file couldn't be found.
+    """
+
+    root = tk.Tk()
+
+    root.withdraw()
+
+    # --------------------------------------------------------
+    # Batch vs individual
+    # --------------------------------------------------------
+
+    mode = ask_batch_or_individual(root)
+
+    if mode is None:
+
+        root.destroy()
+
+        return []
+
+    if mode == "batch":
+
+        super_folder = filedialog.askdirectory(
+
+            title="Select Patient Super-Folder (e.g. Patient_1)",
+
+        )
+
+        if not super_folder:
+
+            root.destroy()
+
+            return []
+
+        session_dirs = find_session_subfolders(
+            Path(super_folder)
+        )
+
+        if not session_dirs:
+
+            messagebox.showerror(
+
+                "No Session Folders Found",
+
+                "No Patient_YYYYMMDD_HHMMSS session subfolders "
+                f"were found in:\n{super_folder}",
+
+            )
+
+            root.destroy()
+
+            return []
+
+        if len(session_dirs) != 4:
+
+            print(
+                "Note: expected 4 session subfolders, found "
+                f"{len(session_dirs)}. Continuing anyway."
+            )
+
+    else:
+
+        session_folder = filedialog.askdirectory(
+
+            title="Select Session Folder (e.g. Patient_20260727_121113)",
+
+        )
+
+        if not session_folder:
+
+            root.destroy()
+
+            return []
+
+        session_dir = Path(session_folder)
+
+        try:
+
+            parse_patient_folder_datetime(session_dir.name)
+
+        except ValueError as error:
+
+            messagebox.showerror(
+
+                "Invalid Session Folder",
+
+                "Folder name doesn't match the expected "
+                f"Patient_YYYYMMDD_HHMMSS format.\n\n{error}",
+
+            )
+
+            root.destroy()
+
+            return []
+
+        session_dirs = [session_dir]
+
+    # --------------------------------------------------------
+    # Balance video / Unity video questions (asked once, applied
+    # to every session in this run)
+    # --------------------------------------------------------
+
+    generate_video, generate_unity_video = get_run_options()
+
+    # --------------------------------------------------------
+    # Locate each session's .xls export and build its config
+    # --------------------------------------------------------
+
+    configs: list[AnalysisConfig] = []
+
+    for session_dir in session_dirs:
+
+        xls_path = locate_xls_with_retry(session_dir)
+
+        if xls_path is None:
+
+            root.destroy()
+
+            return []
+
+        config = build_analysis_config(
+            session_dir,
+            xls_path,
+            generate_video,
+            generate_unity_video,
+        )
+
+        if config is None:
+
+            root.destroy()
+
+            return []
+
+        configs.append(config)
+
+    root.destroy()
+
+    return configs
+
 
 # ============================================================
 # Main Entry Point
@@ -934,10 +1218,10 @@ def main():
     Application entry point.
     """
 
-    config = get_user_config()
+    configs = get_batch_configs()
 
 
-    if config is None:
+    if not configs:
 
         print(
             "Analysis cancelled."
@@ -946,25 +1230,32 @@ def main():
         return
 
 
-
-    try:
-
-        run_analysis(
-            config
-        )
-
-
-    except Exception as error:
-
-        import traceback
-
-
-        traceback.print_exc()
-
+    for index, config in enumerate(configs, start=1):
 
         print(
-            f"\nAnalysis failed: {error}"
+            f"\n=== Session {index}/{len(configs)}: "
+            f"{config.output_directory.name} ==="
         )
+
+        try:
+
+            run_analysis(
+                config
+            )
+
+
+        except Exception as error:
+
+            import traceback
+
+
+            traceback.print_exc()
+
+
+            print(
+                f"\nAnalysis failed for {config.output_directory.name}: "
+                f"{error}"
+            )
 
 
 

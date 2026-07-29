@@ -7,14 +7,14 @@ from tkinter import Tk, filedialog
 # -----------------------------
 
 # Right eye
-right_x = 119
-right_y = 79
+right_x = 118
+right_y = 66
 right_crop_width = 109
 right_crop_height = 138
 
 # Left eye
-left_x = 130
-left_y = 70
+left_x = 115
+left_y = 47
 left_crop_width = 109
 left_crop_height = 138
 

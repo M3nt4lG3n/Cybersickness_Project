@@ -290,7 +290,7 @@ def build_eye_readings(
 
     for side, (pupil_path, eye_path) in sides.items():
 
-        print(f"Building {side}_eye_readings.csv...")
+        print(f"Building {side}_pupil_readings.csv...")
 
         pupil_df = _read_csv_if_exists(pupil_path)
         eye_df = _read_csv_if_exists(eye_path)
