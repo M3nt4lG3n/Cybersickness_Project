@@ -321,6 +321,10 @@ def process_frames(thresholded_image_strict, thresholded_image_medium, threshold
     
     #iterate through binary images and see which fits the ellipse best
     for i in range(1,4):
+        # Reset per-iteration so a rejected candidate can't accidentally
+        # inherit a previous iteration's final_goodness value.
+        final_goodness = 0
+
         # Dilate the binary image
         dilated_image = cv2.dilate(image_array[i-1], kernel, iterations=2)#medium
         
@@ -336,6 +340,19 @@ def process_frames(thresholded_image_strict, thresholded_image_medium, threshold
             #gray_copy = gray_frame.copy()
             #cv2.drawContours(gray_copies[i-1], reduced_contours, -1, (255), 1)
             ellipse = cv2.fitEllipse(reduced_contours[0])
+
+            # cv2.fitEllipse() does a least-squares fit assuming the input
+            # points trace a full ellipse perimeter. If reduced_contours[0]
+            # is actually a thin curved arc (e.g. the eyelid crease, not a
+            # closed pupil boundary) rather than a filled pupil blob,
+            # fitEllipse can extrapolate a center point well outside the
+            # masked search region around darkest_point -- even though
+            # every contour pixel it was fit from lies inside that region.
+            # A real pupil fit should stay within the square we searched.
+            ellipse_center_dist = math.hypot(ellipse[0][0] - darkest_point[0],
+                                              ellipse[0][1] - darkest_point[1])
+            fitted_outside_search_region = ellipse_center_dist > (SQUARE_SIZE / 2.0)
+
             if debug_mode_on: #show contours 
                 cv2.imshow(name_array[i-1] + " threshold", gray_copies[i-1])
                 
@@ -345,7 +362,15 @@ def process_frames(thresholded_image_strict, thresholded_image_medium, threshold
             cv2.ellipse(gray_copies[i-1], ellipse, (255, 0, 0), 2)  # Draw with specified color and thickness of 2
             font = cv2.FONT_HERSHEY_SIMPLEX  # Font type
             
-            final_goodness = current_goodness[0]*total_pixels[0]*total_pixels[0]*total_pixels[1]
+            if fitted_outside_search_region:
+                final_goodness = 0
+                if debug_mode_on:
+                    print(f"  [{name_array[i-1]}] rejected: fitted ellipse center "
+                          f"{ellipse_center_dist:.1f}px from darkest_point "
+                          f"(> {SQUARE_SIZE/2.0:.0f}px search radius) -- likely a "
+                          f"partial arc, not the pupil")
+            else:
+                final_goodness = current_goodness[0]*total_pixels[0]*total_pixels[0]*total_pixels[1]
             
             #show intermediary images with text output
             if debug_mode_on:

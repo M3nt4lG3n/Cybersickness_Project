@@ -2,7 +2,7 @@
 Pupil Visualizer
 ================
 
-Plays back <eye>_pupil_readings.csv recordings from 4 patient sub-folders
+Plays back <eye>_eye_readings.csv recordings from 4 patient sub-folders
 simultaneously, in a 2-row x 4-column grid (row 0 = LEFT eye, row 1 =
 RIGHT eye, one column per sub-folder/trial), drawing each frame's fitted
 pupil ellipse on top of it.
@@ -42,16 +42,28 @@ on-screen cell -- see compute_detection_to_video_transform().
 
 EXPECTED DIRECTORY LAYOUT
 --------------------------
+Sessions are expected to already be reorganized (see
+reorganization.py) into subfolders:
+
 <Patient Parent Directory>/
     <subfolder_1>/
-        left_pupil_readings.csv
-        right_pupil_readings.csv
-        left_eye_cropped.mp4
-        right_eye_cropped.mp4
-        Patient_<Number>_<Value.Value>.iwxdata
+        Eye_CSVs/
+            left_eye_readings.csv
+            right_eye_readings.csv
+        Cropped_Eye_Videos/
+            left_eye_cropped.mp4
+            right_eye_cropped.mp4
+        Raw_Labscribe/
+            Patient_<Number>_<Value.Value>.iwxdata
     <subfolder_2>/ ... (same files)
     <subfolder_3>/ ...
     <subfolder_4>/ ...
+
+For backwards compatibility, a sub-folder that hasn't been
+reorganized yet (i.e. still has these files sitting directly in
+it, the old flat layout) is also supported -- each file is
+looked up in its new subfolder first, falling back to the
+sub-folder root if it's not found there.
 
 EXPECTED CSV COLUMNS
 ---------------------
@@ -89,6 +101,7 @@ REQUIREMENTS
 import os
 import sys
 import glob
+import math
 import numpy as np
 import pandas as pd
 import cv2
@@ -149,10 +162,25 @@ def select_directory(title):
     return path
 
 
+def resolve_session_file(folder, subfolder, filename):
+    """Locate a file that reorganization.py sorts into `subfolder`
+    (e.g. "Eye_CSVs", "Cropped_Eye_Videos", "Raw_Labscribe") inside a
+    session folder. Checks the reorganized location first, then falls
+    back to the session folder's root for sessions that haven't been
+    reorganized yet (old flat layout). Returns the resolved path (which
+    may not exist) -- callers check os.path.exists() themselves."""
+    reorganized_path = os.path.join(folder, subfolder, filename)
+    if os.path.exists(reorganized_path):
+        return reorganized_path
+    return os.path.join(folder, filename)
+
+
 def find_iwxdata_value(folder):
     """Locate the *.iwxdata file in `folder` and extract the Value.Value
     segment from a filename formatted as Patient_Number_Value.Value"""
-    matches = glob.glob(os.path.join(folder, "*.iwxdata"))
+    matches = glob.glob(os.path.join(folder, "Raw_Labscribe", "*.iwxdata"))
+    if not matches:
+        matches = glob.glob(os.path.join(folder, "*.iwxdata"))
     if not matches:
         return "N/A"
 
@@ -164,7 +192,19 @@ def find_iwxdata_value(folder):
 
 
 def raw_csv_path(folder, eye):
-    return os.path.join(folder, f"{eye}_pupil_readings.csv")
+    # merger.py's build_eye_readings() (called from pupils_batch.py's
+    # build_pupil_readings_for_session()) is what actually produces this
+    # session's readings CSV, and it always writes it as
+    # "<eye>_eye_readings.csv" -- merging that side's raw
+    # "<eye>_pupil.csv" detector output against "<eye>_eye.csv" from the
+    # eye-tracker's own pipeline. Nothing in the current pipeline writes
+    # a "<eye>_pupil_readings.csv" file; if one exists in a session
+    # folder it's a stale leftover from an older naming convention.
+    #
+    # reorganization.py sorts this into the session's Eye_CSVs/
+    # subfolder; resolve_session_file() falls back to the session root
+    # for sessions that haven't been reorganized yet.
+    return resolve_session_file(folder, "Eye_CSVs", f"{eye}_eye_readings.csv")
 
 
 def load_csv_for_stream(folder, eye):
@@ -250,7 +290,7 @@ class EyeStream:
         self.stream_id = stream_id
         self.label = f"{os.path.basename(os.path.normpath(folder))} / {eye.upper()}"
 
-        video_path = os.path.join(folder, f"{eye}_eye_cropped.mp4")
+        video_path = resolve_session_file(folder, "Cropped_Eye_Videos", f"{eye}_eye_cropped.mp4")
 
         self.df = df
         self.source_path = source_path
@@ -409,6 +449,42 @@ def draw_debug_overlay(canvas, frame_idx, values, iwx_value):
         y += 14
 
 
+def scale_ellipse_anisotropic(semi_major, semi_minor, angle_deg, sx, sy):
+    """
+    Correctly transforms a rotated ellipse under a non-uniform (per-axis)
+    scale. Naively scaling semi_major by sx and semi_minor by sy while
+    keeping the original angle is only correct when sx == sy -- for a
+    rotated ellipse, scaling x and y by different amounts changes the
+    rotation angle too, not just the axis lengths.
+
+    Represent the ellipse via its 2x2 covariance matrix C = R D R^T,
+    apply the scale as S @ C @ S^T, then eigendecompose the result to
+    recover the true new semi-axis lengths and rotation angle.
+
+    Returns (new_semi_major, new_semi_minor, new_angle_deg).
+    """
+    theta = math.radians(angle_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    R = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+    D = np.array([[semi_major ** 2, 0.0], [0.0, semi_minor ** 2]])
+    C = R @ D @ R.T
+
+    S = np.array([[sx, 0.0], [0.0, sy]])
+    C_new = S @ C @ S.T
+
+    eigvals, eigvecs = np.linalg.eigh(C_new)
+    # eigh returns ascending order; want the larger (major) axis first.
+    eigvals = eigvals[::-1]
+    eigvecs = eigvecs[:, ::-1]
+
+    eigvals = np.clip(eigvals, 0.0, None)  # guard against tiny negative noise
+    new_major = math.sqrt(eigvals[0])
+    new_minor = math.sqrt(eigvals[1])
+    new_angle = math.degrees(math.atan2(eigvecs[1, 0], eigvecs[0, 0]))
+
+    return new_major, new_minor, new_angle
+
+
 def render_cell(stream, frame_idx, show_underlay, show_debug, show_ellipse):
     canvas = np.zeros((CELL_HEIGHT, CELL_WIDTH, 3), dtype=np.uint8)
 
@@ -429,18 +505,24 @@ def render_cell(stream, frame_idx, show_underlay, show_debug, show_ellipse):
         video_major = values["MajorDiameter"] * stream.det_scale
         video_minor = values["MinorDiameter"] * stream.det_scale
 
-        # Video pixel space -> this cell's on-screen canvas space. (These
+        # Video pixel space -> this cell's on-screen canvas space. These
         # two factors are only unequal if the video's own aspect ratio
-        # isn't 4:3, in which case a rotated ellipse's true skewed shape
-        # is approximated by scaling its axes independently.)
+        # isn't 4:3 -- in which case a rotated ellipse needs its axis
+        # lengths AND its rotation angle recomputed under the anisotropic
+        # scale, not just each axis length scaled independently.
         canvas_scale_x = CELL_WIDTH / stream.video_w
         canvas_scale_y = CELL_HEIGHT / stream.video_h
 
         cx = int(round(video_x * canvas_scale_x))
         cy = int(round(video_y * canvas_scale_y))
-        maj = max(1, int(round(video_major * canvas_scale_x / 2.0)))
-        minr = max(1, int(round(video_minor * canvas_scale_y / 2.0)))
-        cv2.ellipse(canvas, (cx, cy), (maj, minr), values["Angle"], 0, 360,
+
+        canvas_major, canvas_minor, canvas_angle = scale_ellipse_anisotropic(
+            video_major / 2.0, video_minor / 2.0, values["Angle"],
+            canvas_scale_x, canvas_scale_y,
+        )
+        maj = max(1, int(round(canvas_major)))
+        minr = max(1, int(round(canvas_minor)))
+        cv2.ellipse(canvas, (cx, cy), (maj, minr), canvas_angle, 0, 360,
                     RAW_ELLIPSE_COLOR, 2)
 
     draw_grid_overlay(canvas, stream.iwx_value)

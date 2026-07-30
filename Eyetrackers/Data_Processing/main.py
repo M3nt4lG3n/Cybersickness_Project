@@ -23,6 +23,9 @@ Pipeline:
                  |
                  v
           visualization.py
+                 |
+                 v
+          reorganization.py
 
 
 Outputs:
@@ -127,6 +130,8 @@ from .unity_visualization import (
 
 
 from . import merger
+
+from . import reorganization
 
 
 
@@ -1241,6 +1246,14 @@ def main():
 
             run_analysis(
                 config
+            )
+
+            print(
+                "Reorganizing session folder..."
+            )
+
+            reorganization.reorganize_session(
+                config.output_directory
             )
 
 
