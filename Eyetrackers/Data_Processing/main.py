@@ -54,6 +54,8 @@ from datetime import datetime
 
 from pathlib import Path
 
+import sys
+
 
 import pandas as pd
 
@@ -130,6 +132,8 @@ from .unity_visualization import (
 
 
 from . import merger
+
+from . import subjective_processing
 
 from . import reorganization
 
@@ -1248,6 +1252,31 @@ def main():
                 config
             )
 
+            # --------------------------------------------------------
+            # Subjective questionnaire (SSQ/MSSQ) processing.
+            #
+            # Must run before reorganization.py moves/renames files in
+            # the session folder, so it can find the raw *_SSQ.csv and
+            # *_MSSQ.csv exports in their original location. A missing
+            # questionnaire file is treated as fatal for the whole run
+            # (not just this session) since there are no checks further
+            # along the pipeline to catch it.
+            # --------------------------------------------------------
+
+            try:
+
+                subjective_processing.process_session(
+                    config.output_directory
+                )
+
+            except subjective_processing.MissingQuestionnaireFileError:
+
+                # Console message already printed inside
+                # subjective_processing; stop the entire run rather
+                # than continuing to the next session.
+
+                sys.exit(1)
+
             print(
                 "Reorganizing session folder..."
             )
@@ -1255,6 +1284,11 @@ def main():
             reorganization.reorganize_session(
                 config.output_directory
             )
+
+
+        except SystemExit:
+
+            raise
 
 
         except Exception as error:

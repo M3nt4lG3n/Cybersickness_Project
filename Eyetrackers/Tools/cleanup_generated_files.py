@@ -36,6 +36,22 @@ The following files are ALWAYS preserved:
     *.iwxdata
     *.xls
 
+Also always preserved are the subjective-input files produced by
+subjective_inputs.py:
+    Patient_<N>_<trial>_Reports.csv   (e.g. Patient_1_0.0_Reports.csv)
+    Patient_<N>_<trial>_SSQ.csv       (e.g. Patient_1_0.0_SSQ.csv)
+    Patient_<N>_MSSQ.csv
+
+The Reports/SSQ files live inside a recording folder (directly,
+or under a Subjective_Results subfolder) and are flattened to
+that recording folder's root along with the other kept files.
+The MSSQ file lives one level up, directly under the Patient
+superfolder, alongside the recording folders rather than inside
+one - since this script only cleans within each recording folder
+it selects, that file is never touched either way, but it is
+still recognized as a keeper in case it's ever found nested
+inside a recording folder.
+
 Preserved files are moved back to the top level of the
 recording folder (flattening any reorganized subfolders), and
 everything else - including all generated CSVs (e.g.
@@ -43,18 +59,22 @@ everything else - including all generated CSVs (e.g.
 and every subdirectory itself - is deleted. The end result is
 always the flat layout:
 
-    Patient_20260727_163406/
-        left_eye_cropped.mp4
-        left_eye.csv
-        left_eye.mp4
-        left_pupil.csv
-        right_eye_cropped.mp4
-        right_eye.csv
-        right_eye.mp4
-        right_pupil.csv
-        unity_biometrics.csv
-        *.iwxdata
-        *.xls
+    Patient_1/
+        Patient_1_MSSQ.csv
+        Patient_20260727_163406/
+            left_eye_cropped.mp4
+            left_eye.csv
+            left_eye.mp4
+            left_pupil.csv
+            right_eye_cropped.mp4
+            right_eye.csv
+            right_eye.mp4
+            right_pupil.csv
+            unity_biometrics.csv
+            Patient_1_0.0_Reports.csv
+            Patient_1_0.0_SSQ.csv
+            *.iwxdata
+            *.xls
 
 Run from VSCode:
     python cleanup_generated_files.py
@@ -86,6 +106,18 @@ KEEP_EXTENSIONS = {
     ".xls",
 }
 
+# The Reports/SSQ/MSSQ csv filenames produced by subjective_inputs.py embed
+# a patient name and a trial identifier (either a 0.X value or, as a
+# fallback, a folder name), so they're matched by pattern rather than by
+# exact name, e.g.:
+#   Patient_1_0.0_Reports.csv
+#   Patient_1_0.0_SSQ.csv
+#   Patient_1_MSSQ.csv
+SUBJECTIVE_INPUT_PATTERNS = (
+    re.compile(r"^Patient_.+_(Reports|SSQ)\.csv$", re.IGNORECASE),
+    re.compile(r"^Patient_.+_MSSQ\.csv$", re.IGNORECASE),
+)
+
 # Recording folder names look like:
 # Patient_20260727_163406
 PATIENT_FOLDER_PATTERN = re.compile(r"^Patient_\d{8}_\d{6}$")
@@ -102,6 +134,9 @@ def should_keep(path: Path) -> bool:
         return True
 
     if path.suffix.lower() in KEEP_EXTENSIONS:
+        return True
+
+    if any(pattern.match(path.name) for pattern in SUBJECTIVE_INPUT_PATTERNS):
         return True
 
     return False

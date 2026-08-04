@@ -56,6 +56,27 @@ Merge rules
          timestamp when it gets folded into the combined
          UnixTime_ms dataset.
 
+5. *_Reports.csv (e.g. Patient_1_0.0_Reports.csv, produced by
+   subjective_inputs.py) is folded into the combined dataset
+   last, lined up against the unity__ReportPulse column rather
+   than by timestamp:
+
+       - unity__ReportPulse sits at False until a short run of
+         True samples marks a Patient Report being logged; each
+         such run lines up, in order, with one row of
+         *_Reports.csv (Patient_Report_Number 1, 2, 3, ...) and
+         the reported value/comment are attached to the first
+         row of that run.
+       - If fewer True-runs are found than there are report
+         rows, the combined dataset's last row is duplicated
+         (with ReportPulse forced to True) once per missing
+         run so there are always enough line-up points.
+       - If there are extra True-runs beyond the number of
+         report rows, those are left without reported data.
+       - If no *_Reports.csv can be found in the input folder,
+         a console error is printed and this step is skipped;
+         the rest of the combined file is still produced.
+
 Expected input layout
 ----------------------
 All of the following are expected in the same parent folder as
@@ -71,6 +92,12 @@ Any of these that are missing are skipped with a warning rather
 than raising, since not every recording session necessarily has
 eye-tracking or biometrics data attached.
 
+Also expected in that same folder is the subjective Reports csv
+produced by subjective_inputs.py (e.g. Patient_1_0.0_Reports.csv
+- the trial value in the name varies with the .iwxdata file). If
+it's missing, a console error is printed telling the user to
+generate it first; the rest of the merge still proceeds.
+
 Author:
     Brian Bizon / OpenAI
 """
@@ -79,6 +106,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+import re
 
 import pandas as pd
 
@@ -113,6 +142,15 @@ RIGHT_EYE_FILENAME = "right_eye.csv"
 RIGHT_PUPIL_FILENAME = "right_pupil.csv"
 LEFT_EYE_FILENAME = "left_eye.csv"
 LEFT_PUPIL_FILENAME = "left_pupil.csv"
+
+# Column (after label-prefixing during the UnixTime_ms merge, see
+# rule #1) that marks a subjective-report "pulse": Unity flips this
+# from False to a short run of True while a Patient Report entry is
+# being logged.
+REPORT_PULSE_COLUMN = "unity__ReportPulse"
+
+# Prefix used for the columns folded in from *_Reports.csv.
+REPORTS_LABEL = "reports"
 
 @dataclass(slots=True)
 class MergeInputPaths:
@@ -309,6 +347,169 @@ def build_eye_readings(
         print(f"  Wrote {out_path.name} ({len(merged)} rows)")
 
     return results
+
+
+# ============================================================
+# Rule #5: fold the subjective Reports csv in against ReportPulse
+# ============================================================
+
+def _pulse_is_true(value) -> bool:
+    """Normalize a ReportPulse cell (bool, NaN, or string) to True/False."""
+
+    if pd.isna(value):
+        return False
+
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+
+    return bool(value)
+
+
+def find_reports_csv(input_dir: Path) -> Path | None:
+    """
+    Look for the *_Reports.csv produced by subjective_inputs.py
+    (e.g. Patient_1_0.0_Reports.csv) in `input_dir`. The trial
+    value in the middle of the name varies with the .iwxdata
+    file, so this matches on suffix rather than a fixed name.
+    """
+
+    candidates = sorted(input_dir.glob("*_Reports.csv"))
+
+    if not candidates:
+        return None
+
+    if len(candidates) > 1:
+        print(
+            f"  Warning: multiple *_Reports.csv files found in {input_dir}; "
+            f"using {candidates[0].name}."
+        )
+
+    return candidates[0]
+
+
+def expected_reports_filename_hint(input_dir: Path) -> str:
+    """
+    Best-effort filename hint for the console error, based on any
+    .iwxdata file's 0.X value found in `input_dir`.
+    """
+
+    for f in sorted(input_dir.glob("*.iwxdata")):
+        match = re.search(r"(\d\.\d+)", f.name)
+        if match:
+            return f"Patient_X_{match.group(1)}_Reports.csv"
+
+    return "Patient_X_<trial>_Reports.csv"
+
+
+def merge_reports_into_combined(
+    combined: pd.DataFrame,
+    reports_df: pd.DataFrame,
+    pulse_column: str = REPORT_PULSE_COLUMN,
+) -> pd.DataFrame:
+    """
+    Fold the subjective Patient Reports (from *_Reports.csv) into
+    the combined dataset, lined up against `pulse_column` rather
+    than by timestamp.
+
+    `pulse_column` sits at False until a short series of True
+    samples marks that a report was being logged. Each such
+    series - a run of consecutive True samples, skipping over
+    the blank/NaN filler rows introduced by the 1ms grid rather
+    than letting them break a run - lines up, in order, with one
+    row of `reports_df` (Patient_Report_Number 1, 2, 3, ...).
+    Only the first row of each True-series receives the reported
+    data; the rest of that series' rows are left as-is.
+
+    If there are fewer True-series than rows in `reports_df`,
+    the combined dataset's last row is duplicated (with
+    `pulse_column` forced to True) once per missing series, so
+    there are always enough line-up points. If there are more
+    True-series than report rows, the extra series are simply
+    left without reported data.
+    """
+
+    combined = combined.copy()
+
+    if pulse_column not in combined.columns:
+        raise ValueError(
+            f"'{pulse_column}' column not found in the combined dataframe."
+        )
+
+    reports_df = reports_df.sort_values("Patient_Report_Number").reset_index(drop=True)
+
+    report_columns = ["Patient_Report_Number", "Reported_Value", "Comments"]
+    combined_report_columns = {c: f"{REPORTS_LABEL}__{c}" for c in report_columns}
+
+    for col in combined_report_columns.values():
+        combined[col] = pd.NA
+
+    # ---- find the first row of each True-series, in order ----------
+    # (skipping blank/NaN filler rows rather than letting them break
+    # a series).
+    run_start_indices = []
+    in_run = False
+
+    for idx in combined.index:
+
+        value = combined.at[idx, pulse_column]
+
+        if pd.isna(value):
+            continue
+
+        if _pulse_is_true(value):
+            if not in_run:
+                run_start_indices.append(idx)
+                in_run = True
+        else:
+            in_run = False
+
+    num_runs = len(run_start_indices)
+    num_reports = len(reports_df)
+
+    # ---- pad up to the expected number of line-up points -----------
+    if num_runs < num_reports:
+
+        print(
+            f"  Warning: expected {num_reports} report line-up points in "
+            f"'{pulse_column}' but found {num_runs}; duplicating the last "
+            "row to make up the difference."
+        )
+
+        while len(run_start_indices) < num_reports:
+
+            last_idx = combined.index[-1]
+            new_index = combined.index.max() + 1
+
+            new_row = combined.loc[[last_idx]].copy()
+            new_row.index = [new_index]
+            combined = pd.concat([combined, new_row])
+
+            combined.at[new_index, pulse_column] = True
+            run_start_indices.append(new_index)
+
+    elif num_runs > num_reports:
+
+        print(
+            f"  Note: found {num_runs} report line-up points in "
+            f"'{pulse_column}' but only {num_reports} row(s) in the "
+            "Reports csv; the extra line-up point(s) will be left "
+            "without reported data."
+        )
+
+    # ---- attach each report row's data to its line-up point --------
+    n = min(len(run_start_indices), num_reports)
+
+    for i in range(n):
+
+        row_idx = run_start_indices[i]
+        report_row = reports_df.iloc[i]
+
+        for orig_col, new_col in combined_report_columns.items():
+            combined.at[row_idx, new_col] = report_row[orig_col]
+
+    combined = combined.reset_index(drop=True)
+
+    return combined
 
 
 # ============================================================
@@ -525,6 +726,27 @@ def merge_all(
 
     # ---- Prune to unity_biometrics' range, drop empty rows ----
     combined = prune_combined(combined, unity_min, unity_max)
+
+    # ---- Rule #5: fold in the subjective Reports csv ----------
+    reports_path = find_reports_csv(paths.input_dir)
+
+    if reports_path is None:
+        hint = expected_reports_filename_hint(paths.input_dir)
+        print(
+            f"Error: No *_Reports.csv file found in {paths.input_dir} "
+            f"(expected something like {hint}). Please make a "
+            "_Reports.csv using subjective_inputs.py before continuing."
+        )
+    elif REPORT_PULSE_COLUMN not in combined.columns:
+        print(
+            f"  Warning: '{REPORT_PULSE_COLUMN}' column not found in the "
+            "combined dataset (unity_biometrics.csv missing or has no "
+            "ReportPulse column); skipping the Reports merge."
+        )
+    else:
+        reports_df = pd.read_csv(reports_path)
+        combined = merge_reports_into_combined(combined, reports_df)
+        print(f"  Folded {reports_path.name} into the combined dataset.")
 
     stem = paths.timestamped_csv.stem.replace("_timestamped", "")
     output_path = output_directory / f"{stem}_combined.csv"
