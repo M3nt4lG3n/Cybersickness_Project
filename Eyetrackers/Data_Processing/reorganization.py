@@ -42,16 +42,33 @@ Resulting layout inside a session folder:
 
     Unity/
         unity_biometrics.csv
+        unity_reports.csv
 
     Visualization/
         <stem>_balance.mp4
         <stem>_unity.mp4
         <stem>_ecg.png
+        <stem>_Hop_Count.png
+        <stem>_Percentile_Curve.png
+        <stem>_Total_Severity.png
+
+    Subjective_Results/
+        <stem>_Reports.csv
+        <stem>_SSQ.csv
 
 `<stem>` is the LabScribe file stem for this session (e.g.
 "Patient_1_0.0"), taken from the session's .iwxdata file name -
 this is what main.py's `create_output_paths()` already uses to
 name every generated analysis file.
+
+Note on the MSSQ csv: subjective_processing.py writes
+`<mssq_stem>_scored.csv` (and expects the raw MSSQ csv, e.g.
+"Patient_1_MSSQ.csv") directly in the super-folder that holds a
+patient's session subfolders, not inside any individual session
+folder -- since the MSSQ is collected once per patient rather than
+once per session. reorganize_session() only ever looks at files
+directly inside the session folder it's given, so it never touches
+those MSSQ files; they're intentionally left where they are.
 
 Can be imported and called directly from main.py:
 
@@ -82,6 +99,7 @@ SUBFOLDERS = (
     "Labscribe_CSVs",
     "Unity",
     "Visualization",
+    "Subjective_Results",
 )
 
 # Files whose name never changes between sessions.
@@ -100,6 +118,7 @@ FIXED_NAME_DESTINATIONS = {
     "right_eye_readings.csv": "Eye_CSVs",
 
     "unity_biometrics.csv": "Unity",
+    "unity_reports.csv": "Unity",
 }
 
 # Suffixes appended to the session's LabScribe stem
@@ -107,6 +126,11 @@ FIXED_NAME_DESTINATIONS = {
 # matters: more specific suffixes must be checked before the
 # bare ".csv"/".xls" ones so e.g. "_analysis.csv" isn't matched
 # as a generic ".csv".
+#
+# Note: the MSSQ csv and its scored counterpart are NOT listed here --
+# they live in the super-folder above the session subfolders, not inside
+# any individual session folder, so reorganize_session() never
+# encounters them (see the module docstring's MSSQ note).
 STEM_SUFFIX_DESTINATIONS = (
     ("_analysis.csv", "Labscribe_CSVs"),
     ("_beats.csv", "Labscribe_CSVs"),
@@ -115,6 +139,12 @@ STEM_SUFFIX_DESTINATIONS = (
     ("_balance.mp4", "Visualization"),
     ("_unity.mp4", "Visualization"),
     ("_ecg.png", "Visualization"),
+    ("_Hop_Count.png", "Visualization"),
+    ("_Percentile_Curve.png", "Visualization"),
+    ("_Total_Severity.png", "Visualization"),
+    ("_Reports.csv", "Subjective_Results"),
+    ("_SSQ_scored.csv", "Subjective_Results"),
+    ("_SSQ.csv", "Subjective_Results"),
     (".xls", "Raw_Labscribe"),
     (".iwxdata", "Raw_Labscribe"),
     (".csv", "Raw_Labscribe"),

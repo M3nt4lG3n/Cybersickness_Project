@@ -3,8 +3,7 @@ subjective_processing.py
 
 Scores Simulator Sickness Questionnaire (SSQ) and Motion Sickness
 Susceptibility Questionnaire (MSSQ) CSV exports found in a LabScribe
-session folder, and renders reference figures from the source papers
-using the patient's own data:
+session folder, using the scoring methods from the source papers:
 
   - Kennedy, R. S., Lane, N. E., Berbaum, K. S., & Lilienthal, M. G. (1993).
     Simulator Sickness Questionnaire: An Enhanced Method for Quantifying
@@ -14,6 +13,13 @@ using the patient's own data:
   - Golding, J. F. (1998). Motion sickness susceptibility questionnaire
     revised and its relationship to other forms of sickness. Brain Research
     Bulletin, 47(5), 507-516.
+
+Figure rendering lives in subjective_visualization.py, not here -- this
+module only scores questionnaires and writes csvs. That mirrors the rest
+of the pipeline's separation of data processing from visualization
+(cf. ecg.py / balance.py / summary.py -> visualization.py). This module
+imports subjective_visualization and calls into it after scoring each
+session.
 
 Pipeline integration
 ---------------------
@@ -27,7 +33,7 @@ MSSQ/SSQ CSV exports in their original location:
     io.py -> ecg.py / balance.py -> summary.py -> visualization.py
         |
         v
-    subjective_processing.py   <-- (this module)
+    subjective_processing.py -> subjective_visualization.py   <-- (this module + its figure renderer)
         |
         v
     reorganization.py
@@ -42,6 +48,14 @@ message describing what's missing and raises
 MissingQuestionnaireFileError, which the pipeline stops the entire run
 for (not just this session), rather than silently continuing.
 
+Because the MSSQ is shared by every session under the same super-folder,
+`process_session()` scores it fresh each time (so each session's figures
+always reflect it) but only ever writes `<mssq_stem>_scored.csv` into
+that shared super-folder -- never into the individual session folder.
+Every session for the same patient writes to that same path, so exactly
+one MSSQ scored csv ends up on disk per patient rather than one per
+session.
+
 Standalone usage
 -----------------
     python -m analysis.subjective_processing <path>
@@ -54,13 +68,17 @@ Standalone usage
 The script auto-detects which one it was given, exactly like the
 "batch or individual" choice at the start of the main pipeline.
 
-Outputs (written directly into the relevant session subfolder)
------------------------------------------------------------------
+Outputs
+-------
+Written directly into the session subfolder:
     <ssq_stem>_scored.csv
+    <Patient_prefix>[_<iwxdata tag>]_Percentile_Curve.png   (MSSQ Fig. 1, via subjective_visualization.py)
+    <Patient_prefix>[_<iwxdata tag>]_Total_Severity.png     (SSQ Fig. 1, via subjective_visualization.py)
+    <Patient_prefix>[_<iwxdata tag>]_Hop_Count.png           (SSQ Fig. 3, via subjective_visualization.py)
+
+Written into the super-folder above the session subfolders (shared
+across all of a patient's sessions, written once):
     <mssq_stem>_scored.csv
-    <Patient_prefix>[_<iwxdata tag>]_Percentile_Curve.png   (MSSQ Fig. 1)
-    <Patient_prefix>[_<iwxdata tag>]_Total_Severity.png     (SSQ Fig. 1)
-    <Patient_prefix>[_<iwxdata tag>]_Hop_Count.png           (SSQ Fig. 3)
 
 If a ".iwxdata" raw-data file is present in the session folder (matching
 the same naming convention as the SSQ/MSSQ CSVs, e.g.
@@ -83,17 +101,18 @@ import sys
 from pathlib import Path
 from statistics import mean
 
-import matplotlib
-
-matplotlib.use("Agg")  # non-interactive backend -- safe to import anywhere
-import matplotlib.pyplot as plt
-
 try:
     # Reuse the pipeline's own session-folder-name parser when available
     # (this module lives in the same package as main.py in production).
     from .timestamps import parse_patient_folder_datetime
 except ImportError:  # pragma: no cover - allows standalone script use
     parse_patient_folder_datetime = None
+
+try:
+    # Figure rendering is a separate module -- see the module docstring.
+    from . import subjective_visualization as viz
+except ImportError:  # pragma: no cover - allows standalone script use
+    import subjective_visualization as viz
 
 
 # ---------------------------------------------------------------------------
@@ -141,22 +160,10 @@ SSQ_O_CONST = 7.58
 SSQ_D_CONST = 13.92
 SSQ_TS_CONST = 3.74
 
-# Table 5: percentile points for each SSQ scale in the calibration sample
-# (N ~ 1,100 observations). Used for numeric interpretation via
-# _table5_percentile() below (percentile-figure rendering is handled
-# elsewhere).
-SSQ_TABLE5_PERCENTILES = [40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99]
-SSQ_TABLE5 = {
-    "N":  [0.0, 0.0, 0.0, 0.0, 0.0, 9.5, 9.5, 9.5, 9.5, 19.7, 28.6, 38.2, 38.2, 47.7, 57.2, 66.8],
-    "O":  [0.0, 0.0, 7.6, 7.6, 7.6, 7.6, 15.2, 15.2, 22.7, 27.7, 30.3, 45.5, 45.5, 53.1, 53.1, 60.7],
-    "D":  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 13.9, 13.9, 27.8, 41.7, 41.7, 55.7, 55.7, 83.5],
-    "TS": [0.0, 3.7, 3.7, 3.7, 7.5, 7.5, 11.2, 15.0, 22.5, 22.5, 30.0, 44.9, 44.9, 48.7, 56.2, 75.9],
-}
-
+# Calibration-sample means, printed alongside each session's own scores
+# for context (Kennedy et al., 1993, Table 5).
 SSQ_CALIBRATION_MEANS = {"N": 7.7, "O": 10.6, "D": 6.4, "TS": 9.8}
 SSQ_CALIBRATION_SD = 15.0
-
-SSQ_SUBSCALE_COLORS = {"N": "#1f77b4", "O": "#ff7f0e", "D": "#2ca02c", "TS": "#d62728"}
 
 
 def _normalize(text):
@@ -217,25 +224,6 @@ def score_ssq_file(path):
 def _trial_number(colname):
     m = re.search(r"(\d+)\s*$", colname)
     return int(m.group(1)) if m else 0
-
-
-def _table5_percentile(subscale, score):
-    """Interpolate an approximate percentile for `score` on `subscale`
-    using the published Table 5 points (Kennedy et al., 1993)."""
-    xs, ys = SSQ_TABLE5_PERCENTILES, SSQ_TABLE5[subscale]
-    if score is None:
-        return None
-    if score <= ys[0]:
-        return xs[0]
-    if score >= ys[-1]:
-        return xs[-1]
-    for (p_lo, s_lo), (p_hi, s_hi) in zip(zip(xs, ys), zip(xs[1:], ys[1:])):
-        if s_lo <= score <= s_hi:
-            if s_hi == s_lo:
-                return p_lo
-            frac = (score - s_lo) / (s_hi - s_lo)
-            return round(p_lo + frac * (p_hi - p_lo), 1)
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -378,93 +366,6 @@ def print_mssq_summary(path, rows_out):
 
 
 # ---------------------------------------------------------------------------
-# Graph rendering
-# ---------------------------------------------------------------------------
-
-def plot_mssq_percentile_curve(rows_out, out_path):
-    """MSSQ Figure 1 analogue: cumulative percentile curve (Golding, 1998),
-    with this session's respondent(s) marked on it."""
-    xs = [s for _, s in MSSQ_PERCENTILE_CURVE]
-    ys = [p for p, _ in MSSQ_PERCENTILE_CURVE]
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(xs, ys, marker="o", color="#1f77b4", label="Digitized reference curve\n(Golding, 1998, Fig. 1)")
-
-    for r in rows_out:
-        score, pct = r["MSSQ_raw"], r["MSSQ_approx_percentile"]
-        if score is None:
-            continue
-        ax.plot(score, pct, marker="*", markersize=16, color="#d62728", linestyle="none",
-                 label=f"Row {r['row']} score={score} (~{pct}th pct.)")
-        ax.axvline(score, color="#d62728", linestyle=":", alpha=0.5)
-        ax.axhline(pct, color="#d62728", linestyle=":", alpha=0.5)
-
-    ax.set_xlabel("MSSQ Raw Score")
-    ax.set_ylabel("Percentile")
-    ax.set_title("Motion Sickness Susceptibility Questionnaire\nApproximate Percentile Curve")
-    ax.set_ylim(0, 100)
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=8, loc="lower right")
-    fig.text(0.01, 0.01,
-              "Note: curve digitized from Golding (1998) Fig. 1; approximate, not the "
-              "original published lookup table.",
-              fontsize=7, style="italic")
-    fig.tight_layout(rect=(0, 0.03, 1, 1))
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-def plot_ssq_total_severity(results, out_path):
-    """SSQ Figure 1 analogue: severity by subscale for each trial in this
-    session (cf. Kennedy et al., 1993, Fig. 1 population histogram)."""
-    trials = list(results.keys())
-    subscales = ["N", "O", "D", "TS"]
-    x = range(len(trials))
-    width = 0.2
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for i, sub in enumerate(subscales):
-        values = [results[t][sub] for t in trials]
-        offsets = [xi + (i - 1.5) * width for xi in x]
-        ax.bar(offsets, values, width=width, label=sub, color=SSQ_SUBSCALE_COLORS[sub])
-
-    for sub in subscales:
-        ax.axhline(SSQ_CALIBRATION_MEANS[sub], color=SSQ_SUBSCALE_COLORS[sub],
-                    linestyle="--", alpha=0.4, linewidth=1)
-
-    ax.set_xticks(list(x))
-    ax.set_xticklabels([t.replace("Trial_Response_", "Trial ") for t in trials])
-    ax.set_ylabel("SSQ Score")
-    ax.set_title("Simulator Sickness Questionnaire\nSeverity by Trial (dashed = calibration-sample mean)")
-    ax.legend(fontsize=8)
-    ax.grid(axis="y", alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-def plot_ssq_hop_count(results, out_path):
-    """SSQ Figure 3 analogue: scores as a function of trial ('hop') number."""
-    trials = list(results.keys())
-    hop_numbers = [_trial_number(t) or (i + 1) for i, t in enumerate(trials)]
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    for sub in ["N", "O", "D", "TS"]:
-        values = [results[t][sub] for t in trials]
-        ax.plot(hop_numbers, values, marker="o", color=SSQ_SUBSCALE_COLORS[sub], label=sub)
-
-    ax.set_xlabel("Hop / Trial Number")
-    ax.set_ylabel("SSQ Score")
-    ax.set_title("SSQ Scores Across Trials\n(cf. Kennedy et al., 1993, Fig. 3)")
-    ax.set_xticks(hop_numbers)
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
 # File discovery
 # ---------------------------------------------------------------------------
 
@@ -478,55 +379,69 @@ def _match_csvs(session_dir, needle, exclude=None):
 
 
 def discover_files(session_dir):
-    """Return (ssq_files, mssq_files). SSQ csvs are found directly inside
-    `session_dir`. MSSQ csvs are found directly inside `session_dir`'s
-    parent folder -- the super-folder that holds the patient session
-    subfolders -- since the MSSQ is collected once per super-folder
-    rather than once per session."""
+    """Return (ssq_files, mssq_files) without raising -- a non-fatal
+    lookup used by resolve_session_dirs() for batch/individual
+    auto-detection. SSQ csvs are found directly inside `session_dir`.
+    MSSQ csvs are found directly inside `session_dir`'s parent folder --
+    the super-folder that holds the patient session subfolders -- since
+    the MSSQ is collected once per super-folder rather than once per
+    session. See find_ssq_file()/find_mssq_file() for the fatal,
+    single-file lookups used by process_session()."""
     session_dir = Path(session_dir)
     ssq_files = _match_csvs(session_dir, "ssq", exclude="mssq")
     mssq_files = _match_csvs(session_dir.parent, "mssq")
     return ssq_files, mssq_files
 
 
-def find_questionnaire_files(session_dir):
-    """Locate exactly one SSQ csv directly inside `session_dir`, and
-    exactly one MSSQ csv directly inside `session_dir`'s parent folder.
-    Prints a console message and raises MissingQuestionnaireFileError if
-    either is missing -- this is the hard stop condition required by the
-    pipeline (there are no fallback checks upstream)."""
+def find_ssq_file(session_dir):
+    """Locate exactly one SSQ csv directly inside `session_dir`. Prints a
+    console message and raises MissingQuestionnaireFileError if none is
+    found -- this is the hard stop condition required by the pipeline
+    (there are no fallback checks upstream)."""
     session_dir = Path(session_dir)
-    ssq_files, mssq_files = discover_files(session_dir)
+    ssq_files, _ = discover_files(session_dir)
 
-    missing = []
     if not ssq_files:
-        missing.append("SSQ")
-    if not mssq_files:
-        missing.append("MSSQ")
-
-    if missing:
         print(
-            f"\nStopping: {' and '.join(missing)} csv file(s) not found.\n"
-            f"  Expected SSQ csv directly inside:  {session_dir}\n"
-            f"  Expected MSSQ csv directly inside: {session_dir.parent}\n"
+            f"\nStopping: SSQ csv file not found directly inside session "
+            f"folder:\n  {session_dir}\n"
             "Every patient session folder must contain a '*_SSQ.csv' "
-            "file, and the super-folder above it must contain a "
-            "'*_MSSQ.csv' file, before the pipeline can continue."
+            "file before the pipeline can continue."
         )
-        raise MissingQuestionnaireFileError(
-            f"Missing {' and '.join(missing)} csv file(s) for session {session_dir}"
-        )
+        raise MissingQuestionnaireFileError(f"Missing SSQ csv file in {session_dir}")
 
     if len(ssq_files) > 1:
         print(f"  Note: multiple SSQ csv files found in {session_dir}; using {ssq_files[0]}.")
-    if len(mssq_files) > 1:
-        print(f"  Note: multiple MSSQ csv files found in {session_dir.parent}; using {mssq_files[0]}.")
 
-    return Path(ssq_files[0]), Path(mssq_files[0])
+    return Path(ssq_files[0])
+
+
+def find_mssq_file(super_folder):
+    """Locate exactly one MSSQ csv directly inside `super_folder` -- the
+    folder holding the patient's session subfolders, one level above any
+    individual session_dir. Prints a console message and raises
+    MissingQuestionnaireFileError if none is found."""
+    super_folder = Path(super_folder)
+    mssq_files = _match_csvs(super_folder, "mssq")
+
+    if not mssq_files:
+        print(
+            f"\nStopping: MSSQ csv file not found directly inside:\n"
+            f"  {super_folder}\n"
+            "The folder containing the patient's session subfolders must "
+            "contain a '*_MSSQ.csv' file before the pipeline can continue."
+        )
+        raise MissingQuestionnaireFileError(f"Missing MSSQ csv file in {super_folder}")
+
+    if len(mssq_files) > 1:
+        print(f"  Note: multiple MSSQ csv files found in {super_folder}; using {mssq_files[0]}.")
+
+    return Path(mssq_files[0])
 
 
 # ---------------------------------------------------------------------------
-# Output filename construction
+# Session/patient identification (used both for csv naming here and for
+# image naming over in subjective_visualization.py)
 # ---------------------------------------------------------------------------
 
 def _extract_patient_prefix(filename):
@@ -561,12 +476,6 @@ def find_iwxdata_tag(session_dir):
     return f"{m.group(1)}.{m.group(2)}"
 
 
-def build_image_filename(patient_prefix, tag, suffix):
-    if tag:
-        return f"{patient_prefix}_{tag}_{suffix}.png"
-    return f"{patient_prefix}_{suffix}.png"
-
-
 # ---------------------------------------------------------------------------
 # Session processing (main pipeline integration point)
 # ---------------------------------------------------------------------------
@@ -574,19 +483,29 @@ def build_image_filename(patient_prefix, tag, suffix):
 def process_session(session_dir):
     """
     Process one session folder's SSQ/MSSQ questionnaires: score them,
-    write the scored CSVs, and render the four reference figures.
+    write the scored CSVs, and (via subjective_visualization.py) render
+    the reference figures.
 
     This is the function main.py calls for each session, before
     reorganization.reorganize_session(). Raises
     MissingQuestionnaireFileError (after printing a console message) if
     either csv can't be found -- callers should treat that as fatal and
     stop the whole run.
+
+    The SSQ scored csv is written into `session_dir`, same as before. The
+    MSSQ scored csv is written into `session_dir.parent` instead -- the
+    super-folder shared by every session for this patient -- since the
+    MSSQ itself lives (and is scored) there rather than per-session. Every
+    session writes to that same shared path, so only one MSSQ scored csv
+    ends up on disk per patient no matter how many sessions are processed.
     """
     session_dir = Path(session_dir)
+    super_folder = session_dir.parent
 
     print(f"Scoring subjective questionnaires in {session_dir}...")
 
-    ssq_path, mssq_path = find_questionnaire_files(session_dir)
+    ssq_path = find_ssq_file(session_dir)
+    mssq_path = find_mssq_file(super_folder)
 
     ssq_results = score_ssq_file(ssq_path)
     mssq_rows = score_mssq_file(mssq_path)
@@ -595,27 +514,23 @@ def process_session(session_dir):
     print_mssq_summary(mssq_path, mssq_rows)
 
     ssq_out = write_ssq_output(ssq_path, ssq_results, session_dir)
-    mssq_out = write_mssq_output(mssq_path, mssq_rows, session_dir)
+    mssq_out = write_mssq_output(mssq_path, mssq_rows, super_folder)
     print(f"  -> {ssq_out}")
-    print(f"  -> {mssq_out}")
+    print(f"  -> {mssq_out} (shared across this patient's sessions)")
 
     # ----------------------------------------------------------------
-    # Figures
+    # Figures -- handed off to subjective_visualization.py
     # ----------------------------------------------------------------
 
     patient_prefix = _extract_patient_prefix(ssq_path.name)
     tag = find_iwxdata_tag(session_dir)
 
-    mssq_curve_path = session_dir / build_image_filename(patient_prefix, tag, "Percentile_Curve")
-    ssq_total_severity_path = session_dir / build_image_filename(patient_prefix, tag, "Total_Severity")
-    ssq_hop_count_path = session_dir / build_image_filename(patient_prefix, tag, "Hop_Count")
-
-    plot_mssq_percentile_curve(mssq_rows, mssq_curve_path)
-    plot_ssq_total_severity(ssq_results, ssq_total_severity_path)
-    plot_ssq_hop_count(ssq_results, ssq_hop_count_path)
+    figures = viz.render_session_figures(
+        session_dir, patient_prefix, tag, ssq_results, mssq_rows
+    )
 
     print("  Figures written:")
-    for p in (mssq_curve_path, ssq_total_severity_path, ssq_hop_count_path):
+    for p in figures.values():
         print(f"    -> {p}")
 
     return {
@@ -623,11 +538,7 @@ def process_session(session_dir):
         "mssq_rows": mssq_rows,
         "ssq_scored_csv": ssq_out,
         "mssq_scored_csv": mssq_out,
-        "figures": {
-            "mssq_percentile_curve": mssq_curve_path,
-            "ssq_total_severity": ssq_total_severity_path,
-            "ssq_hop_count": ssq_hop_count_path,
-        },
+        "figures": figures,
     }
 
 
@@ -705,7 +616,7 @@ def main():
         try:
             process_session(session_dir)
         except MissingQuestionnaireFileError:
-            # Message already printed inside find_questionnaire_files().
+            # Message already printed inside find_ssq_file()/find_mssq_file().
             sys.exit(1)
 
 

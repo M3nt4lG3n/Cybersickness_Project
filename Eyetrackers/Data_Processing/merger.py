@@ -77,6 +77,16 @@ Merge rules
          a console error is printed and this step is skipped;
          the rest of the combined file is still produced.
 
+6. unity_reports.csv is a secondary output, written alongside the
+   combined csv whenever both unity_biometrics.csv and the Reports
+   csv are available. It applies the exact same first-True-of-
+   each-run alignment described in rule #5, but directly to
+   unity_biometrics.csv's own (unprefixed) ReportPulse column,
+   rather than to the combined grid's prefixed
+   'unity__ReportPulse' column -- so it's just unity_biometrics.csv
+   with the subjective report data folded in, independent of the
+   rest of the merge.
+
 Expected input layout
 ----------------------
 All of the following are expected in the same parent folder as
@@ -96,7 +106,8 @@ Also expected in that same folder is the subjective Reports csv
 produced by subjective_inputs.py (e.g. Patient_1_0.0_Reports.csv
 - the trial value in the name varies with the .iwxdata file). If
 it's missing, a console error is printed telling the user to
-generate it first; the rest of the merge still proceeds.
+generate it first; the rest of the merge still proceeds (and
+unity_reports.csv, which also needs it, is skipped).
 
 Author:
     Brian Bizon / OpenAI
@@ -143,11 +154,15 @@ RIGHT_PUPIL_FILENAME = "right_pupil.csv"
 LEFT_EYE_FILENAME = "left_eye.csv"
 LEFT_PUPIL_FILENAME = "left_pupil.csv"
 
-# Column (after label-prefixing during the UnixTime_ms merge, see
-# rule #1) that marks a subjective-report "pulse": Unity flips this
-# from False to a short run of True while a Patient Report entry is
-# being logged.
-REPORT_PULSE_COLUMN = "unity__ReportPulse"
+# Column in unity_biometrics.csv itself (before any label-prefixing)
+# that marks a subjective-report "pulse": Unity flips this from False
+# to a short run of True while a Patient Report entry is being logged.
+UNITY_REPORT_PULSE_COLUMN = "ReportPulse"
+
+# The same column's name after label-prefixing during the UnixTime_ms
+# merge (see rule #1) -- this is the name it has inside the combined
+# dataframe that rule #5 operates on.
+REPORT_PULSE_COLUMN = f"unity__{UNITY_REPORT_PULSE_COLUMN}"
 
 # Prefix used for the columns folded in from *_Reports.csv.
 REPORTS_LABEL = "reports"
@@ -512,6 +527,39 @@ def merge_reports_into_combined(
     return combined
 
 
+def build_unity_reports(
+    unity_df: pd.DataFrame,
+    reports_df: pd.DataFrame,
+    output_directory: Path,
+    pulse_column: str = UNITY_REPORT_PULSE_COLUMN,
+) -> Path:
+    """
+    Build unity_reports.csv (rule #6): unity_biometrics.csv with the
+    subjective Patient Reports (from *_Reports.csv) folded straight in
+    against its own, unprefixed ReportPulse column.
+
+    This reuses merge_reports_into_combined() -- the exact same
+    first-True-of-each-run alignment as rule #5 -- but applies it
+    directly to the raw unity_biometrics.csv dataframe rather than the
+    already-built, UnixTime_ms-prefixed combined grid. That's possible
+    because merge_reports_into_combined() only needs a dataframe with a
+    pulse column of the given name; it doesn't require UnixTime_ms or
+    any of the other combined-grid machinery.
+    """
+
+    merged = merge_reports_into_combined(unity_df, reports_df, pulse_column=pulse_column)
+
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    out_path = output_directory / "unity_reports.csv"
+    merged.to_csv(out_path, index=False)
+
+    print(f"  Wrote {out_path.name} ({len(merged)} rows)")
+
+    return out_path
+
+
 # ============================================================
 # Rule #1: UnixTime_ms based merging
 # ============================================================
@@ -659,8 +707,8 @@ def merge_all(
     output_directory: Path,
 ) -> Path:
     """
-    Run the full merge pipeline and write out a single combined
-    CSV alongside the two eye-reading CSVs.
+    Run the full merge pipeline and write out a single combined CSV
+    alongside the two eye-reading CSVs and (rule #6) unity_reports.csv.
 
     Returns the path to the combined output file.
     """
@@ -737,16 +785,33 @@ def merge_all(
             f"(expected something like {hint}). Please make a "
             "_Reports.csv using subjective_inputs.py before continuing."
         )
-    elif REPORT_PULSE_COLUMN not in combined.columns:
-        print(
-            f"  Warning: '{REPORT_PULSE_COLUMN}' column not found in the "
-            "combined dataset (unity_biometrics.csv missing or has no "
-            "ReportPulse column); skipping the Reports merge."
-        )
     else:
         reports_df = pd.read_csv(reports_path)
-        combined = merge_reports_into_combined(combined, reports_df)
-        print(f"  Folded {reports_path.name} into the combined dataset.")
+
+        if REPORT_PULSE_COLUMN not in combined.columns:
+            print(
+                f"  Warning: '{REPORT_PULSE_COLUMN}' column not found in the "
+                "combined dataset (unity_biometrics.csv missing or has no "
+                "ReportPulse column); skipping the Reports merge."
+            )
+        else:
+            combined = merge_reports_into_combined(combined, reports_df)
+            print(f"  Folded {reports_path.name} into the combined dataset.")
+
+        # ---- Rule #6: unity_reports.csv, the same fold-in applied
+        # directly to unity_biometrics.csv rather than the full grid ----
+        if unity_df is None:
+            print(
+                "  Warning: unity_biometrics.csv not found; skipping "
+                "unity_reports.csv."
+            )
+        elif UNITY_REPORT_PULSE_COLUMN not in unity_df.columns:
+            print(
+                f"  Warning: '{UNITY_REPORT_PULSE_COLUMN}' column not found "
+                "in unity_biometrics.csv; skipping unity_reports.csv."
+            )
+        else:
+            build_unity_reports(unity_df, reports_df, output_directory)
 
     stem = paths.timestamped_csv.stem.replace("_timestamped", "")
     output_path = output_directory / f"{stem}_combined.csv"
