@@ -1,147 +1,186 @@
 """
-data_provider.py
+Common/data_provider.py
 
-Loads modality-specific datasets from the indexed patient structure.
+DataProviders load data ONLY (per ML_PIPELINE.md principle: "DataProviders
+load data only") - they hand a clean, tagged DataFrame to the rest of the
+pipeline (preprocessing -> feature_selection -> model_selection -> ...).
+
+Each provider wraps a PatientDataLoader and knows how to aggregate one
+modality (or the combined multimodal table) across the WHOLE Patient_Data
+tree, regardless of how many patients/sessions exist or how they're named.
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
-from pathlib import Path
+from typing import Optional, Tuple
+
 import pandas as pd
 
-from .data_loader import DatasetLoader, PatientTrial
+from Config import config
+from Common.data_loader import PatientDataLoader
+from Common.utils import get_logger, tag_feature_group
 
-class DataProvider(ABC):
-    """
-    Base class for every modality-specific data provider.
-    """
+logger = get_logger("data_provider")
 
-    def __init__(self, loader: DatasetLoader):
-        self.loader = loader
+
+class BaseDataProvider(ABC):
+    """Common interface for all modality data providers."""
+
+    feature_group: str = "unknown"
+
+    def __init__(self, loader: Optional[PatientDataLoader] = None):
+        self.loader = loader or PatientDataLoader()
+        self._cache: Optional[pd.DataFrame] = None
 
     @abstractmethod
-    def load_trial(self, trial: PatientTrial) -> pd.DataFrame:
-        pass
+    def _load_raw(self) -> pd.DataFrame:
+        """Return the raw aggregated DataFrame for this modality."""
 
-    def load_all(self) -> pd.DataFrame:
-        dfs = []
-        for trial in self.loader.iter_trials():
-            try:
-                df = self.load_trial(trial)
-                if df is None or df.empty:
-                    continue
-                df["PatientID"] = trial.patient_id
-                df["TrialName"] = trial.trial_name
-                dfs.append(df)
-            except Exception as e:
-                print(f"Failed to load {trial.trial_name}: {e}")
-        if not dfs:
-            return pd.DataFrame()
-        return pd.concat(dfs, ignore_index=True)
+    def load(self, refresh: bool = False) -> pd.DataFrame:
+        if self._cache is None or refresh:
+            self._cache = self._load_raw()
+        return self._cache
 
-class CombinedDataProvider(DataProvider):
+    def get_data(
+        self, target_column: Optional[str] = None, drop_metadata: bool = True
+    ) -> Tuple[pd.DataFrame, Optional[pd.Series], pd.Series]:
+        """Return (X, y, groups) ready for preprocessing/modeling.
 
-    def load_trial(self, trial: PatientTrial) -> pd.DataFrame:
-        if trial.combined_file is None:
-            return pd.DataFrame()
-        return pd.read_csv(trial.combined_file)
+        - X: feature columns (metadata columns removed by default)
+        - y: the target_column if given and present, else None
+        - groups: PatientID, for GroupShuffleSplit / GroupKFold
+        """
+        df = self.load()
+        if df.empty:
+            return df, None, pd.Series(dtype=object)
 
-class EyeDataProvider(DataProvider):
-
-    def load_trial(self, trial: PatientTrial) -> pd.DataFrame:
-        dfs = []
-
-        for csv in trial.eye_files:
-            df = pd.read_csv(csv)
-
-            if "left" in csv.stem.lower():
-                prefix = "LeftEye_"
-            elif "right" in csv.stem.lower():
-                prefix = "RightEye_"
-            else:
-                prefix = ""
-
-            df.rename(
-                columns={
-                    c: prefix + c
-                    for c in df.columns
-                    if c != "UnixTime_ms"
-                },
-                inplace=True,
+        if config.GROUP_COLUMN not in df.columns:
+            raise KeyError(
+                f"Expected group column '{config.GROUP_COLUMN}' not present "
+                f"in {self.__class__.__name__} data."
             )
+        groups = df[config.GROUP_COLUMN]
 
-            dfs.append(df)
+        y = None
+        if target_column is not None:
+            if target_column not in df.columns:
+                raise KeyError(f"target_column '{target_column}' not found in data.")
+            y = df[target_column]
 
-        if len(dfs) == 0:
+        drop_cols = []
+        if drop_metadata:
+            drop_cols += [c for c in config.METADATA_COLUMNS if c in df.columns]
+        if target_column is not None and target_column in df.columns:
+            drop_cols.append(target_column)
+
+        X = df.drop(columns=drop_cols, errors="ignore")
+        return X, y, groups
+
+    def feature_columns_by_group(self) -> dict:
+        """Map feature_group -> list of column names, using the keyword
+        rules in config.FEATURE_GROUP_KEYWORDS. Handy for feature_selection
+        or for restricting a model to a subset of modalities."""
+        df = self.load()
+        groups: dict = {}
+        for col in df.columns:
+            if col in config.METADATA_COLUMNS:
+                continue
+            group = tag_feature_group(col, config.FEATURE_GROUP_KEYWORDS)
+            groups.setdefault(group, []).append(col)
+        return groups
+
+
+class EyeDataProvider(BaseDataProvider):
+    feature_group = "eye"
+
+    def _load_raw(self) -> pd.DataFrame:
+        return self.loader.load_all_sessions_modality("eye")
+
+
+class LabscribeDataProvider(BaseDataProvider):
+    feature_group = "labscribe"
+
+    def _load_raw(self) -> pd.DataFrame:
+        return self.loader.load_all_sessions_modality("labscribe")
+
+
+class UnityDataProvider(BaseDataProvider):
+    feature_group = "unity"
+
+    def _load_raw(self) -> pd.DataFrame:
+        return self.loader.load_all_sessions_modality("unity")
+
+
+class SubjectiveDataProvider(BaseDataProvider):
+    feature_group = "subjective"
+
+    def _load_raw(self) -> pd.DataFrame:
+        return self.loader.load_all_sessions_modality("subjective")
+
+
+class MSSQDataProvider(BaseDataProvider):
+    """Patient-level susceptibility metrics. No TrialName/session grain -
+    one row per patient."""
+
+    feature_group = "mssq"
+
+    def _load_raw(self) -> pd.DataFrame:
+        return self.loader.load_all_mssq()
+
+
+class CombinedDataProvider(BaseDataProvider):
+    """Preferred multimodal input (DATA_SCHEMA.md: 'Combined CSV - Preferred
+    input for multimodal models'). Aggregates every session's *_combined.csv
+    and left-joins patient-level MSSQ metrics on PatientID so susceptibility
+    features are available alongside session-level readings."""
+
+    feature_group = "combined"
+
+    def __init__(self, loader: Optional[PatientDataLoader] = None, include_mssq: bool = True):
+        super().__init__(loader)
+        self.include_mssq = include_mssq
+
+    def _load_raw(self) -> pd.DataFrame:
+        combined = self.loader.load_all_combined()
+        if combined.empty:
+            logger.warning(
+                "No *_combined.csv files found; falling back to an on-the-fly "
+                "merge of Eye/Labscribe/Unity/Subjective modalities per session."
+            )
+            combined = self._build_combined_fallback()
+
+        if self.include_mssq and not combined.empty:
+            mssq = self.loader.load_all_mssq()
+            if not mssq.empty and "PatientID" in combined.columns:
+                mssq_cols = [c for c in mssq.columns if c == "PatientID" or c not in combined.columns]
+                combined = combined.merge(mssq[mssq_cols], on="PatientID", how="left")
+
+        return combined
+
+    def _build_combined_fallback(self) -> pd.DataFrame:
+        """If no pre-built combined CSV exists for a session, concatenate
+        (not join, since sampling rates differ across modalities) the
+        available modality tables so at least a usable dataset is produced."""
+        frames = []
+        for modality in ("eye", "labscribe", "unity", "subjective"):
+            df = self.loader.load_all_sessions_modality(modality)
+            if not df.empty:
+                frames.append(df)
+        if not frames:
             return pd.DataFrame()
+        return pd.concat(frames, axis=0, ignore_index=True, sort=False)
 
-        if len(dfs) == 1:
-            return dfs[0]
 
-        return pd.merge_asof(
-            dfs[0].sort_values("UnixTime_ms"),
-            dfs[1].sort_values("UnixTime_ms"),
-            on="UnixTime_ms",
-            direction="nearest",
-        )
+PROVIDERS = {
+    "eye": EyeDataProvider,
+    "labscribe": LabscribeDataProvider,
+    "unity": UnityDataProvider,
+    "subjective": SubjectiveDataProvider,
+    "mssq": MSSQDataProvider,
+    "combined": CombinedDataProvider,
+}
 
-class UnityDataProvider(DataProvider):
 
-    def load_trial(self, trial: PatientTrial) -> pd.DataFrame:
-        dfs = []
-
-        for csv in trial.unity_files:
-            dfs.append(pd.read_csv(csv))
-
-        if not dfs:
-            return pd.DataFrame()
-
-        if len(dfs) == 1:
-            return dfs[0]
-
-        return pd.concat(dfs, axis=1)
-
-class LabscribeDataProvider(DataProvider):
-
-    def load_trial(self, trial: PatientTrial) -> pd.DataFrame:
-        dfs = []
-
-        for csv in trial.labscribe_files:
-            dfs.append(pd.read_csv(csv))
-
-        if not dfs:
-            return pd.DataFrame()
-
-        return pd.concat(dfs, axis=1)
-
-class SubjectiveDataProvider(DataProvider):
-
-    def load_trial(self, trial: PatientTrial) -> pd.DataFrame:
-        dfs = []
-
-        for csv in trial.subjective_files:
-            dfs.append(pd.read_csv(csv))
-
-        if not dfs:
-            return pd.DataFrame()
-
-        return pd.concat(dfs, axis=1)
-
-class MSSQDataProvider(DataProvider):
-
-    def load_trial(self, trial: PatientTrial) -> pd.DataFrame:
-        patient = self.loader.get_patient(trial.patient_id)
-
-        if patient is None:
-            return pd.DataFrame()
-
-        dfs = []
-
-        for csv in patient.mssq_files:
-            dfs.append(pd.read_csv(csv))
-
-        if not dfs:
-            return pd.DataFrame()
-
-        return pd.concat(dfs, axis=1)
+def get_provider(name: str, loader: Optional[PatientDataLoader] = None) -> BaseDataProvider:
+    if name not in PROVIDERS:
+        raise ValueError(f"Unknown data provider '{name}'. Options: {list(PROVIDERS)}")
+    return PROVIDERS[name](loader)

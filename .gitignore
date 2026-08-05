@@ -4,6 +4,12 @@ Eyetrackers/Outputs/__pycache__
 Eyetrackers/Tests/__pycache__
 Eyetrackers/Tools/__pycache__
 Eyetrackers/Data_Processing/__pycache__
+Machine_Learning/Common/__pycache__
+Machine_Learning/Config/__pycache__
+Machine_Learning/Models/__pycache__
+Machine_Learning/Figure
+Machine_Learning/Results
+Machine_Learning/Saved Models
 Patient_Data
 Test_CSVs
 Logs
