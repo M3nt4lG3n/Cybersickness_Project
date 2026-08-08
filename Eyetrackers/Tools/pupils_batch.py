@@ -18,13 +18,21 @@ import csv
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from Eyetrackers.Data_Processing.merger import build_eye_readings, MergeInputPaths
 
+import patient_config as pc
+
 # -----------------------------
 # Pupil Detection Configuration Settings
 # -----------------------------
-RELAXED_THRESHOLD = 40
-MEDIUM_THRESHOLD = 50
-STRICT_THRESHOLD = 60 
-SQUARE_SIZE = 200
+# No longer hard-coded: these are set per-video, from that video's
+# patient/eye-side entry in patient_config.json, just before each call
+# to process_video() (see _apply_pupil_globals() / run_batch_for_patient()
+# below). They start out at the shared defaults purely so the module
+# still imports cleanly and the detection functions below always have
+# *something* to read.
+RELAXED_THRESHOLD = pc.DEFAULT_PUPIL["RELAXED_THRESHOLD"]
+MEDIUM_THRESHOLD = pc.DEFAULT_PUPIL["MEDIUM_THRESHOLD"]
+STRICT_THRESHOLD = pc.DEFAULT_PUPIL["STRICT_THRESHOLD"]
+SQUARE_SIZE = pc.DEFAULT_PUPIL["SQUARE_SIZE"]
 
 # -----------------------------
 # Blinking Detection Tolerance
@@ -655,7 +663,19 @@ def select_patient_directory():
     root = tk.Tk()
     root.withdraw()
     patient_dir = filedialog.askdirectory(title="Select Patient Directory")
+    root.destroy()
     return patient_dir
+
+
+# Copies one eye side's saved pupil-detection parameters from
+# patient_config.json onto the module-level globals that the (unmodified)
+# detection functions above read at call time.
+def _apply_pupil_globals(side_cfg):
+    global RELAXED_THRESHOLD, MEDIUM_THRESHOLD, STRICT_THRESHOLD, SQUARE_SIZE
+    RELAXED_THRESHOLD = side_cfg["RELAXED_THRESHOLD"]
+    MEDIUM_THRESHOLD = side_cfg["MEDIUM_THRESHOLD"]
+    STRICT_THRESHOLD = side_cfg["STRICT_THRESHOLD"]
+    SQUARE_SIZE = side_cfg["SQUARE_SIZE"]
 
 
 # Reuses merger.py's build_eye_readings() to (re)generate a session
@@ -702,10 +722,21 @@ def build_pupil_readings_for_session(session_dir):
 #     doing that risks window conflicts.
 # A strict queue keeps every video's frame-by-frame detection behaving exactly
 # like running this script once per video by hand.
-def run_batch(show_window=True):
-    patient_dir = select_patient_directory()
+#
+# Uses that patient's saved parameters from patient_config.json instead of
+# hard-coded constants. Can be called directly (e.g. from pupils.py) with an
+# already-known patient_dir, skipping the folder-selection dialog.
+def run_batch_for_patient(patient_dir, show_window=True):
     if not patient_dir:
-        print("No directory selected. Exiting.")
+        print("No patient folder given.")
+        return
+
+    patient_id = pc.find_patient_id(patient_dir)
+    if patient_id is None:
+        pc.show_error(
+            "Patient Not Recognized",
+            f"Could not determine a Patient_<number> id from:\n{patient_dir}"
+        )
         return
 
     jobs = find_patient_eye_videos(patient_dir)
@@ -714,11 +745,25 @@ def run_batch(show_window=True):
         print(f"No left_eye_cropped.mp4 or right_eye_cropped.mp4 files found in subfolders of: {patient_dir}")
         return
 
-    print(f"Found {len(jobs)} video(s) to process:")
+    config = pc.load_config()
+    needed_sides = sorted({eye_label for _, _, eye_label in jobs})
+    missing = [s for s in needed_sides if not pc.has_pupil_params(pc.get_side(config, patient_id, s))]
+
+    if missing:
+        pc.show_error(
+            "Missing Pupil-Detection Parameters",
+            f"No saved pupil-detection parameters for {patient_id} ({', '.join(missing)} eye).\n\n"
+            f"Please set the parameters using pupils.py first."
+        )
+        return
+
+    print(f"Found {len(jobs)} video(s) to process for {patient_id}:")
     for video_path, csv_path, eye_label in jobs:
         print(f"  [{eye_label}] {video_path}")
 
     for video_path, csv_path, eye_label in jobs:
+        side_cfg = pc.get_side(config, patient_id, eye_label)
+        _apply_pupil_globals(side_cfg)
         print(f"\nProcessing {eye_label} eye video: {video_path}")
         process_video(video_path, csv_path, input_method=1, show_window=show_window)
 
@@ -730,6 +775,15 @@ def run_batch(show_window=True):
         build_pupil_readings_for_session(session_dir)
 
     print("\nDone. Processed all videos.")
+
+
+def run_batch(show_window=True):
+    patient_dir = select_patient_directory()
+    if not patient_dir:
+        print("No directory selected. Exiting.")
+        return
+
+    run_batch_for_patient(patient_dir, show_window=show_window)
 
 
 if __name__ == "__main__":

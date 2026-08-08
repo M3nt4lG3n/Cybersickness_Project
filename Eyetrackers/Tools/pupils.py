@@ -1,26 +1,23 @@
 import cv2
 import numpy as np
-import random
 import math
 import tkinter as tk
-import os
 from tkinter import filedialog
-import matplotlib.pyplot as plt
-import csv
 
-output_file = "left_pupil.csv"
-generate_csv = True
+import patient_config as pc
 
-RELAXED_THRESHOLD = 40
-MEDIUM_THRESHOLD = 50
-STRICT_THRESHOLD = 60 
-# SQUARE_SIZE = 150
+# These start out as the shared defaults and get overwritten with a
+# patient/side's saved values (or left at defaults for a brand-new
+# patient/side) as soon as a video is selected. They are then further
+# adjustable at runtime with the on-screen +/- controls.
+RELAXED_THRESHOLD = pc.DEFAULT_PUPIL["RELAXED_THRESHOLD"]
+MEDIUM_THRESHOLD = pc.DEFAULT_PUPIL["MEDIUM_THRESHOLD"]
+STRICT_THRESHOLD = pc.DEFAULT_PUPIL["STRICT_THRESHOLD"]
+SQUARE_SIZE = pc.DEFAULT_PUPIL["SQUARE_SIZE"]
 
-# RELAXED_THRESHOLD = 19
-# MEDIUM_THRESHOLD = 25
-# STRICT_THRESHOLD = 31
-
-SQUARE_SIZE = 200
+# =========================================================================
+# Detection logic below is unmodified from the original pupils.py.
+# =========================================================================
 
 # Crop the image to maintain a specific aspect ratio (width:height) before resizing. 
 def crop_to_aspect_ratio(image, width=640, height=480):
@@ -417,145 +414,275 @@ def process_frame(frame):
     
     return final_rotated_rect
 
-# Loads a video and finds the pupil in each frame
-def process_video(video_path, input_method):
+# =========================================================================
+# Everything below this line is the interactive driver -- this is what
+# changed. The detection functions above are untouched.
+# =========================================================================
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for MP4 format
-    out = cv2.VideoWriter('C:/Storage/Source Videos/output_video.mp4', fourcc, 30.0, (640, 480))  # Output video filename, codec, frame rate, and frame size
+CONTROL_WINDOW = "Pupil Detection Controls"
 
-    if input_method == 1:
-        cap = cv2.VideoCapture(video_path)
-    elif input_method == 2:
-        cap = cv2.VideoCapture(00, cv2.CAP_DSHOW)  # Camera input
-        cap.set(cv2.CAP_PROP_EXPOSURE, -5)
-    else:
-        print("Invalid video source.")
-        return
+PANEL_W = 560
+ROW_H = 46
+TOP_PAD = 55
+BOTTOM_PAD = 55
 
-    if not cap.isOpened():
-        print("Error: Could not open video.")
-        return
-    
-    debug_mode_on = False
-    
-    temp_center = (0,0)
+# (display label / global variable name, min, max)
+CONTROL_ROWS = [
+    ("RELAXED_THRESHOLD", 0, 255),
+    ("MEDIUM_THRESHOLD", 0, 255),
+    ("STRICT_THRESHOLD", 0, 255),
+    ("SQUARE_SIZE", 10, 640),
+]
 
-    if generate_csv:
-        csv_file = open(output_file, "w", newline="")
-        csv_writer = csv.writer(csv_file)
 
-        csv_writer.writerow([
-            "Frame",
-            "Time_ms",
-            "CenterX",
-            "CenterY",
-            "MajorDiameter",
-            "MinorDiameter",
-            "Area",
-            "Angle"
-        ])
+class PupilTuner:
+    """Drives a video frame-by-frame through the (unmodified) detection
+    pipeline above, with a slider to rewind/scrub and on-screen +/-
+    controls to adjust the threshold / square-size globals live."""
 
-        frame_number = 0
-        fps = cap.get(cv2.CAP_PROP_FPS)
+    def __init__(self, video_path):
+        self.video_path = video_path
+        self.cap = cv2.VideoCapture(video_path)
+        if not self.cap.isOpened():
+            raise RuntimeError("Could not open video.")
 
-        if fps <= 0:
-            fps = 30
+        self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if self.frame_count <= 0:
+            raise RuntimeError("Could not determine frame count for video.")
 
-    while True:
-        ret, frame = cap.read()
+        self.idx = 0
+        self.debug_mode_on = False
+        self.paused = False
+        self._suppress_trackbar_cb = False
+
+        self.panel_h = TOP_PAD + ROW_H * len(CONTROL_ROWS) + BOTTOM_PAD
+
+        self._open_control_window()
+
+    def _open_control_window(self):
+        cv2.namedWindow(CONTROL_WINDOW, cv2.WINDOW_AUTOSIZE)
+        cv2.createTrackbar("Frame", CONTROL_WINDOW, self.idx, max(1, self.frame_count - 1), self._on_trackbar)
+        cv2.setMouseCallback(CONTROL_WINDOW, self._on_mouse)
+
+    def _on_trackbar(self, val):
+        if self._suppress_trackbar_cb:
+            return
+        self.idx = val
+        self.paused = True  # scrubbing pauses playback
+
+    def _set_idx(self, new_idx):
+        new_idx = max(0, min(new_idx, self.frame_count - 1))
+        self.idx = new_idx
+        self._suppress_trackbar_cb = True
+        cv2.setTrackbarPos("Frame", CONTROL_WINDOW, new_idx)
+        self._suppress_trackbar_cb = False
+
+    def _button_rects(self):
+        rects = {}
+        for i, (varname, lo, hi) in enumerate(CONTROL_ROWS):
+            y0 = TOP_PAD + i * ROW_H
+            rects[varname] = {
+                "down": (20, y0, 60, y0 + 32),
+                "up": (90, y0, 130, y0 + 32),
+                "lo": lo,
+                "hi": hi,
+            }
+        return rects
+
+    def _on_mouse(self, event, mx, my, flags, param):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        for varname, r in self._button_rects().items():
+            for direction in ("down", "up"):
+                x0, y0, x1, y1 = r[direction]
+                if x0 <= mx <= x1 and y0 <= my <= y1:
+                    delta = -1 if direction == "down" else 1
+                    self._adjust(varname, delta, r["lo"], r["hi"])
+                    return
+
+    def _adjust(self, varname, delta, lo, hi):
+        global RELAXED_THRESHOLD, MEDIUM_THRESHOLD, STRICT_THRESHOLD, SQUARE_SIZE
+        current = globals()[varname]
+        globals()[varname] = max(lo, min(hi, current + delta))
+
+    def _draw_panel(self):
+        panel = np.full((self.panel_h, PANEL_W, 3), 40, dtype=np.uint8)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(panel, f"Frame {self.idx}/{self.frame_count - 1}"
+                            f"  ({'paused' if self.paused else 'playing'})",
+                    (20, 30), font, 0.6, (0, 255, 255), 2)
+
+        for varname, r in self._button_rects().items():
+            y0 = r["down"][1]
+            value = globals()[varname]
+
+            cv2.rectangle(panel, r["down"][0:2], r["down"][2:4], (70, 70, 220), -1)
+            cv2.putText(panel, "-", (r["down"][0] + 14, r["down"][3] - 7), font, 0.9, (255, 255, 255), 2)
+
+            cv2.rectangle(panel, r["up"][0:2], r["up"][2:4], (70, 190, 70), -1)
+            cv2.putText(panel, "+", (r["up"][0] + 11, r["up"][3] - 7), font, 0.9, (255, 255, 255), 2)
+
+            cv2.putText(panel, f"{varname}: {value}", (145, y0 + 24), font, 0.6, (255, 255, 255), 1)
+
+        instr_y = TOP_PAD + ROW_H * len(CONTROL_ROWS) + 28
+        cv2.putText(panel, "SPACE=play/pause  Left/Right=step  D=debug  Q/Enter/Esc=finish",
+                    (20, instr_y), font, 0.48, (200, 200, 200), 1)
+        return panel
+
+    def _get_frame(self, idx):
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = self.cap.read()
         if not ret:
-            break
+            return None
+        return frame
 
-        # Crop and resize frame
-        frame = crop_to_aspect_ratio(frame)
+    def run(self):
+        last_idx = -1
+        frame = None
 
-        #find the darkest point
-        darkest_point = get_darkest_area(frame)
+        while True:
+            if self.idx != last_idx:
+                new_frame = self._get_frame(self.idx)
+                if new_frame is None:
+                    self._set_idx(max(0, self.idx - 1))
+                    continue
+                frame = new_frame
+                last_idx = self.idx
 
-        if debug_mode_on:
-            darkest_image = frame.copy()
-            cv2.circle(darkest_image, darkest_point, 10, (0, 0, 255), -1)
-            cv2.imshow('Darkest image patch', darkest_image)
+            proc_frame = crop_to_aspect_ratio(frame)
+            darkest_point = get_darkest_area(proc_frame)
+            gray_frame = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2GRAY)
+            darkest_pixel_value = gray_frame[darkest_point[1], darkest_point[0]]
 
-        # Convert to grayscale to handle pixel value operations
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        darkest_pixel_value = gray_frame[darkest_point[1], darkest_point[0]]
-        
-        # apply thresholding operations at different levels
-        # at least one should give us a good ellipse segment
-        thresholded_image_strict = apply_binary_threshold(gray_frame, darkest_pixel_value, STRICT_THRESHOLD)#lite
-        thresholded_image_strict = mask_outside_square(thresholded_image_strict, darkest_point, SQUARE_SIZE)
+            thresholded_image_strict = apply_binary_threshold(gray_frame, darkest_pixel_value, STRICT_THRESHOLD)
+            thresholded_image_strict = mask_outside_square(thresholded_image_strict, darkest_point, SQUARE_SIZE)
 
-        thresholded_image_medium = apply_binary_threshold(gray_frame, darkest_pixel_value, MEDIUM_THRESHOLD)#medium
-        thresholded_image_medium = mask_outside_square(thresholded_image_medium, darkest_point, SQUARE_SIZE)
-        
-        thresholded_image_relaxed = apply_binary_threshold(gray_frame, darkest_pixel_value, RELAXED_THRESHOLD)#heavy
-        thresholded_image_relaxed = mask_outside_square(thresholded_image_relaxed, darkest_point, SQUARE_SIZE)
-        
-        #take the three images thresholded at different levels and process them
-        pupil_rotated_rect = process_frames(thresholded_image_strict, thresholded_image_medium, thresholded_image_relaxed, frame, gray_frame, darkest_point, debug_mode_on, True)
+            thresholded_image_medium = apply_binary_threshold(gray_frame, darkest_pixel_value, MEDIUM_THRESHOLD)
+            thresholded_image_medium = mask_outside_square(thresholded_image_medium, darkest_point, SQUARE_SIZE)
 
-        if generate_csv:
-            ((cx, cy), (w, h), angle) = pupil_rotated_rect
+            thresholded_image_relaxed = apply_binary_threshold(gray_frame, darkest_pixel_value, RELAXED_THRESHOLD)
+            thresholded_image_relaxed = mask_outside_square(thresholded_image_relaxed, darkest_point, SQUARE_SIZE)
 
-            # Skip frames where no ellipse was found
-            if w > 0 and h > 0:
-                area = math.pi * (w / 2) * (h / 2)
+            process_frames(
+                thresholded_image_strict, thresholded_image_medium, thresholded_image_relaxed,
+                proc_frame, gray_frame, darkest_point, self.debug_mode_on, True
+            )
 
-                time_ms = frame_number * 1000.0 / fps
+            cv2.imshow(CONTROL_WINDOW, self._draw_panel())
 
-                csv_writer.writerow([
-                    frame_number,
-                    round(time_ms, 3),
-                    round(cx, 2),
-                    round(cy, 2),
-                    round(w, 2),
-                    round(h, 2),
-                    round(area, 2),
-                    round(angle, 2)
-                ])
+            key = cv2.waitKeyEx(30)
+            raw_key = (key & 0xFF) if key != -1 else -1
 
-            frame_number += 1
-        
-        key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('d') and debug_mode_on == False:  # Press 'q' to start debug mode
-            debug_mode_on = True
-        elif key == ord('d') and debug_mode_on == True:
-            debug_mode_on = False
-            cv2.destroyAllWindows()
-        if key == ord('q'):  # Press 'q' to quit
-            out.release()
-            break   
-        elif key == ord(' '):  # Press spacebar to start/stop
-            while True:
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord(' '):  # Press spacebar again to resume
-                    break
-                elif key == ord('q'):  # Press 'q' to quit
-                    break
+            if raw_key in (ord('q'), 13, 27):  # q, Enter, Esc -> finish
+                break
+            elif raw_key == ord('d'):
+                self.debug_mode_on = not self.debug_mode_on
+                if not self.debug_mode_on:
+                    cv2.destroyAllWindows()
+                    self._open_control_window()
+            elif raw_key == ord(' '):
+                self.paused = not self.paused
+            elif key in (2424832, 65361, 63234):  # Left arrow
+                self.paused = True
+                self._set_idx(self.idx - 1)
+            elif key in (2555904, 65363, 63235):  # Right arrow
+                self.paused = True
+                self._set_idx(self.idx + 1)
+            elif key == -1 and not self.paused:
+                if self.idx >= self.frame_count - 1:
+                    break  # reached the end of the video naturally
+                self._set_idx(self.idx + 1)
 
-    if generate_csv:
-        csv_file.close()
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
+        cv2.destroyAllWindows()
 
-#Prompts the user to select a video file if the hardcoded path is not found
-#This is just for my debugging convenience :)
+
+def run_on_video(video_path):
+    global RELAXED_THRESHOLD, MEDIUM_THRESHOLD, STRICT_THRESHOLD, SQUARE_SIZE
+
+    patient_id = pc.find_patient_id(video_path)
+    side = pc.get_eye_side(video_path)
+
+    config = pc.load_config()
+    if patient_id and side:
+        pupil_values = pc.get_pupil_values(config, patient_id, side)
+        RELAXED_THRESHOLD = pupil_values["RELAXED_THRESHOLD"]
+        MEDIUM_THRESHOLD = pupil_values["MEDIUM_THRESHOLD"]
+        STRICT_THRESHOLD = pupil_values["STRICT_THRESHOLD"]
+        SQUARE_SIZE = pupil_values["SQUARE_SIZE"]
+    else:
+        print("Could not determine Patient_X / eye side from this file's path -- "
+              "starting from default threshold values (these won't be saveable).")
+
+    tuner = PupilTuner(video_path)
+    tuner.run()
+    tuner.cap.release()
+
+    print(f"Final values -- RELAXED_THRESHOLD={RELAXED_THRESHOLD}, "
+          f"MEDIUM_THRESHOLD={MEDIUM_THRESHOLD}, STRICT_THRESHOLD={STRICT_THRESHOLD}, "
+          f"SQUARE_SIZE={SQUARE_SIZE}")
+
+    if patient_id is None or side is None:
+        pc.show_error(
+            "Not Saved",
+            "Could not determine a Patient_<number> folder and/or eye side "
+            "(left_eye / right_eye) from this file's path, so these values "
+            "were not saved."
+        )
+        return
+
+    if not pc.ask_yes_no(
+        "Save Threshold Values?",
+        f"Save these pupil-detection parameters for {patient_id} ({side} eye)?\n\n"
+        f"RELAXED_THRESHOLD = {RELAXED_THRESHOLD}\n"
+        f"MEDIUM_THRESHOLD = {MEDIUM_THRESHOLD}\n"
+        f"STRICT_THRESHOLD = {STRICT_THRESHOLD}\n"
+        f"SQUARE_SIZE = {SQUARE_SIZE}"
+    ):
+        print("Not saved.")
+        return
+
+    values = {
+        "RELAXED_THRESHOLD": RELAXED_THRESHOLD,
+        "MEDIUM_THRESHOLD": MEDIUM_THRESHOLD,
+        "STRICT_THRESHOLD": STRICT_THRESHOLD,
+        "SQUARE_SIZE": SQUARE_SIZE,
+    }
+    config = pc.update_side(config, patient_id, side, values)
+    pc.save_config(config)
+    print(f"Saved pupil-detection parameters for {patient_id} ({side} eye) to {pc.CONFIG_PATH}")
+
+    if pc.ask_yes_no(
+        "Run Batch Detection?",
+        f"Run pupil detection on the rest of {patient_id}'s eye videos "
+        f"using these saved parameters?"
+    ):
+        patient_dir = pc.find_patient_dir(video_path)
+        print(f"Running pupil-detection batch for {patient_id} ...")
+        try:
+            import pupils_batch
+        except ImportError as e:
+            pc.show_error("Could Not Start Batch", f"Could not load pupils_batch.py:\n{e}")
+            return
+        pupils_batch.run_batch_for_patient(patient_dir)
+    else:
+        print("Batch detection not run.")
+
+
+#Prompts the user to select a single (already-cropped) video file.
 def select_video():
     root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    video_path = 'C:/Google Drive/Eye Tracking/fulleyetest.mp4'
-    if not os.path.exists(video_path):
-        print("No file found at hardcoded path. Please select a video file.")
-        video_path = filedialog.askopenfilename(title="Select Video File", filetypes=[("Video Files", "*.mp4;*.avi")])
-        if not video_path:
-            print("No file selected. Exiting.")
-            return
-            
-    #second parameter is 1 for video 2 for webcam
-    process_video(video_path, 1)
+    root.withdraw()
+    video_path = filedialog.askopenfilename(
+        title="Select Cropped Eye Video File",
+        filetypes=[("Video Files", "*.mp4;*.avi")]
+    )
+    root.destroy()
+    if not video_path:
+        print("No file selected. Exiting.")
+        return
+
+    run_on_video(video_path)
+
 
 if __name__ == "__main__":
     select_video()
